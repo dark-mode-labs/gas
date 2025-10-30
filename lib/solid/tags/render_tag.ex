@@ -105,18 +105,10 @@ defmodule Solid.Tags.RenderTag do
     end
 
     defp get_or_put_cache(template, options) do
-      cache_module = Keyword.get(options, :cache_module, Solid.Caching.NoCache)
-
-      case cache_module.get(template) do
-        {:ok, cached_template} ->
-          {:ok, cached_template}
-
-        {:error, :not_found} ->
-          {file_system, instance} = options[:file_system] || {Solid.BlankFileSystem, nil}
-
-          file_system.read_template_file(template, instance)
-          |> parse_and_cache_partial(options, template, cache_module)
-      end
+      Solid.precompile(
+        template,
+        Keyword.put_new(options, :file_system, {Solid.BlankFileSystem, nil})
+      )
     end
 
     defp do_render({:error, %{loc: _} = exception}, tag, context, _options) do
@@ -216,14 +208,5 @@ defmodule Solid.Tags.RenderTag do
         "length" => length
       }
     end
-
-    defp parse_and_cache_partial({:ok, template_str}, options, cache_key, cache_module) do
-      with {:ok, template} <- Solid.parse(template_str, options) do
-        cache_module.put(cache_key, template)
-        {:ok, template}
-      end
-    end
-
-    defp parse_and_cache_partial(other, _options, _cache_key, _cache_module), do: other
   end
 end

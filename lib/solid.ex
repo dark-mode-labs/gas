@@ -107,11 +107,16 @@ defmodule Solid do
 
   def precompile(template, options \\ []) do
     with cache_module <- Keyword.get(options, :cache_module, Solid.Caching.NoCache),
-         {file_system, instance} <- Keyword.fetch!(options, :file_system),
+         {:error, :not_found} <- cache_module.get(template),
+         {file_system, instance} <-
+           Keyword.get(options, :file_system, {Solid.PassThroughFileSystem, nil}),
          {:ok, text} <- file_system.read_template_file(template, instance),
          {:ok, parse_tree} <- parse(text, options),
          :ok <- cache_module.put(template, parse_tree) do
       {:ok, parse_tree}
+    else
+      {:ok, %Solid.Template{} = parsed_template} -> {:ok, parsed_template}
+      other -> other
     end
   end
 

@@ -40,6 +40,18 @@ defmodule Solid.BlankFileSystem do
   end
 end
 
+defmodule Solid.PassThroughFileSystem do
+  @moduledoc """
+  Default file system that return error on call
+  """
+  @behaviour Solid.FileSystem
+
+  @impl true
+  def read_template_file(template, _opts) do
+    {:ok, template}
+  end
+end
+
 defmodule Solid.LocalFileSystem do
   @moduledoc """
   This implements an abstract file system which retrieves template files named in a manner similar to Liquid.
