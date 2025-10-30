@@ -260,9 +260,6 @@ defmodule Solid.Argument do
     filter
     |> StandardFilter.apply(filter_args, loc, opts)
     |> case do
-      {:error, exception, value} ->
-        {value, Context.put_errors(context, exception)}
-
       {:error, exception} ->
         {Exception.message(exception), Context.put_errors(context, exception)}
 

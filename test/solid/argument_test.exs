@@ -384,7 +384,7 @@ defmodule Solid.ArgumentTest do
              ]
     end
 
-    test "missing filter strict_filters" do
+    test "missing filter" do
       arg = %Variable{original_name: "key", loc: @loc, identifier: "key", accesses: []}
 
       filters = [
@@ -398,8 +398,8 @@ defmodule Solid.ArgumentTest do
 
       context = %Solid.Context{vars: %{"key" => 123}}
 
-      assert {:ok, 123, context} =
-               Argument.get(arg, context, filters, strict_filters: true)
+      assert {:ok, _, context} =
+               Argument.get(arg, context, filters)
 
       assert context.errors == [%Solid.UndefinedFilterError{filter: "unknown", loc: @loc}]
     end
@@ -418,21 +418,21 @@ defmodule Solid.ArgumentTest do
 
       context = %Solid.Context{vars: %{"key" => 123}}
 
-      assert {:ok, "Liquid error (line 1): wrong number of arguments (given 2, expected 1)",
+      assert {:ok, "Liquid error (line 1): wrong number of arguments (given 2, expected /1)",
               context} =
-               Argument.get(arg, context, filters, strict_filters: true)
+               Argument.get(arg, context, filters)
 
       assert context.errors == [
                %Solid.WrongFilterArityError{
-                 filter: :upcase,
+                 filter: "upcase",
                  loc: @loc,
                  arity: 2,
-                 expected_arity: 1
+                 expected_arity: "/1"
                }
              ]
     end
 
-    test "missing arg and filter with strict_variables and strict_filters" do
+    test "missing arg and filter with strict_variables" do
       context = %Solid.Context{vars: %{}}
       arg = %Variable{original_name: "key", loc: @loc, identifier: "key", accesses: []}
 
@@ -445,8 +445,8 @@ defmodule Solid.ArgumentTest do
         }
       ]
 
-      assert {:ok, nil, context} =
-               Argument.get(arg, context, filters, strict_variables: true, strict_filters: true)
+      assert {:ok, _partial, context} =
+               Argument.get(arg, context, filters, strict_variables: true)
 
       assert context.errors == [
                %Solid.UndefinedFilterError{filter: "unknown", loc: @loc},
@@ -474,63 +474,6 @@ defmodule Solid.ArgumentTest do
       ]
 
       assert {:ok, "TEXT", ^context} = Argument.get(arg, context, filters)
-    end
-
-    test "filter with named arguments" do
-      context = %Solid.Context{vars: %{"name" => "John"}}
-      arg = %Literal{loc: @loc, value: "hello %{first_name}, %{last_name}"}
-
-      filters = [
-        %Filter{
-          function: "substitute",
-          loc: @loc,
-          named_arguments: %{
-            "first_name" => %Variable{
-              original_name: "name",
-              loc: @loc,
-              identifier: "name",
-              accesses: []
-            },
-            "last_name" => %Literal{loc: @loc, value: "doe"}
-          },
-          positional_arguments: []
-        }
-      ]
-
-      assert {:ok, "hello John, doe", ^context} =
-               Argument.get(arg, context, filters, custom_filters: Solid.CustomFilters)
-    end
-
-    test "filter with named arguments strict_variables" do
-      context = %Solid.Context{vars: %{}}
-      arg = %Literal{loc: @loc, value: "hello %{first_name}, %{last_name}"}
-
-      filters = [
-        %Filter{
-          function: "substitute",
-          loc: @loc,
-          named_arguments: %{
-            "first_name" => %Variable{
-              original_name: "name",
-              loc: @loc,
-              identifier: "name",
-              accesses: []
-            },
-            "last_name" => %Literal{loc: @loc, value: "doe"}
-          },
-          positional_arguments: []
-        }
-      ]
-
-      assert {:ok, "hello , doe", context} =
-               Argument.get(arg, context, filters,
-                 custom_filters: Solid.CustomFilters,
-                 strict_variables: true
-               )
-
-      assert context.errors == [
-               %UndefinedVariableError{variable: ["name"], original_name: "name", loc: @loc}
-             ]
     end
   end
 end

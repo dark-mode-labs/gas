@@ -105,6 +105,16 @@ defmodule Solid do
     end
   end
 
+  def precompile(template, options \\ []) do
+    with cache_module <- Keyword.get(options, :cache_module, Solid.Caching.NoCache),
+         {file_system, instance} <- Keyword.fetch!(options, :file_system),
+         {:ok, text} <- file_system.read_template_file(template, instance),
+         {:ok, parse_tree} <- parse(text, options),
+         :ok <- cache_module.put(template, parse_tree) do
+      {:ok, parse_tree}
+    end
+  end
+
   @doc """
   It renders the compiled template using a map with vars
 
@@ -113,7 +123,7 @@ defmodule Solid do
   @spec render!(Template.t(), map, keyword) :: iolist | no_return
   def render!(%Template{} = template, hash, options \\ []) do
     case render(template, hash, options) do
-      # Ignore errors here unless `strict_variables` or `strict_filters` are used
+      # Ignore errors here unless `strict_variables` are used
       {:ok, result, _error} ->
         result
 
@@ -129,11 +139,7 @@ defmodule Solid do
 
   - `file_system`: a tuple of {FileSystemModule, options}. If this option is not specified, `Solid` uses `Solid.BlankFileSystem` which returns an error when the `render` tag is used. `Solid.LocalFileSystem` can be used or a custom module may be implemented. See `Solid.FileSystem` for more details.
 
-  - `custom_filters`: a module name where additional filters are defined. The base filters (those from `Solid.StandardFilter`) still can be used, however, custom filters always take precedence. May also be a function that receives the filter name and the arguments and must return `{:ok, term} | :error`.
-
   - `strict_variables`: if `true`, it collects an error when a variable is referenced in the template, but not given in the map
-
-  - `strict_filters`: if `true`, it collects an error when a filter is referenced in the template, but not built-in or provided via `custom_filters`
 
   - `matcher_module`: a module to replace `Solid.Matcher` when resolving variables.
 
@@ -209,10 +215,10 @@ defmodule Solid do
   end
 
   defp strict_errors?(errors, options) do
-    variable_errors? = Enum.any?(errors, &match?(%Solid.UndefinedVariableError{}, &1))
-    filter_errors? = Enum.any?(errors, &match?(%Solid.UndefinedFilterError{}, &1))
+    {variable_errors, filter_errors} =
+      Enum.split_with(errors, &match?(%Solid.UndefinedVariableError{}, &1))
 
-    (options[:strict_variables] == true && variable_errors?) ||
-      (options[:strict_filters] == true && filter_errors?)
+    (options[:strict_variables] == true && Enum.count(variable_errors) > 0) ||
+      Enum.count(filter_errors) > 0
   end
 end

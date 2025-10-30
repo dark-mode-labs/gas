@@ -37,12 +37,12 @@ defmodule Solid.BinaryConditionTest do
     end
 
     test "number and string" do
-      assert eval({1, :<, "jose"}) == {:error, "comparison of Integer with String failed"}
-      assert eval({"jose", :<, 1}) == {:error, "comparison of String with 1 failed"}
+      assert eval({1, :<, "jose"}) == {:ok, false}
+      assert eval({"jose", :<, 1}) == {:ok, false}
 
       assert eval({1, :==, "jose"}) == {:ok, false}
 
-      assert eval({1.0, :<, "jose"}) == {:error, "comparison of Float with String failed"}
+      assert eval({1.0, :<, "jose"}) == {:ok, false}
       assert eval({"jose", :<, 1.0}) == {:ok, false}
       assert eval({1.0, :==, "jose"}) == {:ok, false}
     end

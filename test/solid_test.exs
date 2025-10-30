@@ -1,6 +1,5 @@
 defmodule SolidTest do
   use ExUnit.Case, async: true
-  alias Solid.ParserError
 
   defmodule TestFileSystem do
     @behaviour Solid.FileSystem
@@ -105,18 +104,22 @@ defmodule SolidTest do
       template = Solid.parse!(template)
 
       assert Solid.render(template, %{}, file_system: {TestFileSystem, nil}) ==
-               {:ok, ["begin\n", [], "\nend\n"],
-                [
-                  %Solid.TemplateError{
-                    errors: [
-                      %ParserError{
-                        reason: "Unexpected tag 'error'",
-                        meta: %{line: 1, column: 1},
-                        text: "{% error %}"
-                      }
-                    ]
-                  }
-                ]}
+               {
+                 :error,
+                 [
+                   %Solid.TemplateError{
+                     __exception__: true,
+                     errors: [
+                       %Solid.ParserError{
+                         reason: "Unexpected tag 'error'",
+                         meta: %{line: 1, column: 1},
+                         text: "{% error %}"
+                       }
+                     ]
+                   }
+                 ],
+                 ["begin\n", [], "\nend\n"]
+               }
     end
   end
 
@@ -227,13 +230,13 @@ defmodule SolidTest do
     test "render tag no file system" do
       template = "a{{ var1 }} {{ var2 }}b {% render 'filesystem not configured' %}c"
 
-      {:ok, partial_result, errors} =
+      {:error, errors, partial_result} =
         template
         |> Solid.parse!()
         |> Solid.render(%{})
 
       assert IO.iodata_to_binary(partial_result) ==
-               "a b This liquid context does not allow includes.c"
+               "a b c"
 
       assert errors == [
                %Solid.FileSystem.Error{
@@ -274,15 +277,13 @@ defmodule SolidTest do
              ]
     end
 
-    test "return errors when both strict_variables and strict_filters are on" do
+    test "return errors when both strict_variables are on" do
       template = "a{{ var1 | non_existing_filter }} {{ var2 | capitalize }}b"
 
-      {:error, error, partial_result} =
+      {:error, error, _partial_result} =
         template
         |> Solid.parse!()
-        |> Solid.render(%{}, strict_filters: true)
-
-      assert IO.iodata_to_binary(partial_result) == "a b"
+        |> Solid.render(%{})
 
       assert error == [
                %Solid.UndefinedFilterError{
@@ -291,12 +292,10 @@ defmodule SolidTest do
                }
              ]
 
-      {:error, error, partial_result} =
+      {:error, error, _partial_result} =
         template
         |> Solid.parse!()
-        |> Solid.render(%{}, strict_variables: true, strict_filters: true)
-
-      assert IO.iodata_to_binary(partial_result) == "a b"
+        |> Solid.render(%{}, strict_variables: true)
 
       assert error == [
                %Solid.UndefinedVariableError{
@@ -347,7 +346,6 @@ defmodule SolidTest do
                      template
                      |> Solid.parse!()
                      |> Solid.render!(%{"var1" => "value"},
-                       strict_filters: true,
                        file_system: {TestFileSystem, nil}
                      )
                    end

@@ -18,18 +18,19 @@ defmodule Solid.Tag do
       "break" => Tags.BreakTag,
       "capture" => Tags.CaptureTag,
       "case" => Tags.CaseTag,
-      "comment" => Tags.CommentTag,
+      "comment" => Tags.NoOpTag,
       "continue" => Tags.ContinueTag,
       "cycle" => Tags.CycleTag,
       "decrement" => Tags.CounterTag,
+      "doc" => Tags.NoOpTag,
       "echo" => Tags.EchoTag,
       "for" => Tags.ForTag,
       "if" => Tags.IfTag,
       "increment" => Tags.CounterTag,
       "raw" => Tags.RawTag,
       "render" => Tags.RenderTag,
-      "unless" => Tags.IfTag,
-      "tablerow" => Tags.TablerowTag
+      "tablerow" => Tags.TablerowTag,
+      "unless" => Tags.IfTag
     }
   end
 

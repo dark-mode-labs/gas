@@ -69,24 +69,27 @@ defmodule Solid.LocalFileSystem do
       # => "/some/path/index.html"
 
   """
-  defstruct [:root, :pattern]
+  defstruct [:root, :pattern, :pre_processor]
   @behaviour Solid.FileSystem
 
-  def new(root, pattern \\ "_%s.liquid") do
+  def new(root, pattern \\ "_%s.liquid", pre_processor \\ Solid.PassThroughPreProcessor) do
     %__MODULE__{
       root: root,
-      pattern: pattern
+      pattern: pattern,
+      pre_processor: pre_processor
     }
   end
 
   @impl true
-  def read_template_file(template_path, file_system) do
-    with {:ok, full_path} <- full_path(template_path, file_system) do
-      if File.exists?(full_path) do
-        {:ok, File.read!(full_path)}
-      else
+  def read_template_file(template_path, %__MODULE__{} = file_system) do
+    with {:ok, full_path} <- full_path(template_path, file_system),
+         {:exists, true} <- {:exists, File.exists?(full_path)},
+         content <- File.read!(full_path),
+         processed <- file_system.pre_processor.expand(template_path, content) do
+      {:ok, processed}
+    else
+      {:exists, false} ->
         {:error, %Solid.FileSystem.Error{reason: "No such template '#{template_path}'"}}
-      end
     end
   end
 

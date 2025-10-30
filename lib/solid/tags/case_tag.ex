@@ -110,7 +110,7 @@ defmodule Solid.Tags.CaseTag do
             {{:else_block, else_block}, [inner_acc | acc], context}
         end)
 
-      {Enum.reverse(List.flatten(acc)), context}
+      {Enum.reverse(acc) |> List.flatten(), context}
     end
   end
 end

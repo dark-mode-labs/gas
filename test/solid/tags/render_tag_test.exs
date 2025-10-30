@@ -47,8 +47,12 @@ defmodule Solid.Tags.RenderTagTest do
       template = ~s<{% render "file1" %}>
 
       assert parse(template) ==
-               {:ok, %RenderTag{loc: %Loc{line: 1, column: 1}, template: "file1", arguments: %{}},
-                %ParserContext{rest: "", line: 1, column: 21, mode: :normal}}
+               {:ok,
+                %RenderTag{
+                  loc: %Loc{line: 1, column: 1},
+                  template: %Solid.Literal{value: "file1", loc: nil},
+                  arguments: %{}
+                }, %ParserContext{rest: "", line: 1, column: 21, mode: :normal}}
     end
 
     test "arguments" do
@@ -58,7 +62,7 @@ defmodule Solid.Tags.RenderTagTest do
                {:ok,
                 %RenderTag{
                   loc: %Loc{line: 1, column: 1},
-                  template: "file1",
+                  template: %Solid.Literal{value: "file1", loc: nil},
                   arguments: %{
                     "var1" => %Solid.Variable{
                       original_name: "arg1",
@@ -79,7 +83,7 @@ defmodule Solid.Tags.RenderTagTest do
 
       assert {:ok,
               %Solid.Tags.RenderTag{
-                template: "inner_object",
+                template: %Solid.Literal{value: "inner_object", loc: nil},
                 arguments: %{
                   "key" => %Solid.Variable{identifier: "value"},
                   "title" => %Solid.Literal{value: "text"}
@@ -96,7 +100,7 @@ defmodule Solid.Tags.RenderTagTest do
                {:ok,
                 %RenderTag{
                   loc: %Loc{line: 1, column: 1},
-                  template: "file1",
+                  template: %Solid.Literal{value: "file1", loc: nil},
                   arguments:
                     {:with,
                      {%Solid.Variable{
@@ -109,7 +113,7 @@ defmodule Solid.Tags.RenderTagTest do
                             value: 0
                           }
                         ]
-                      }, "file1"}}
+                      }, %Solid.Literal{value: "file1", loc: nil}}}
                 }, %ParserContext{rest: "", line: 1, column: 38, mode: :normal}}
     end
 
@@ -120,7 +124,7 @@ defmodule Solid.Tags.RenderTagTest do
                {:ok,
                 %RenderTag{
                   loc: %Loc{line: 1, column: 1},
-                  template: "file1",
+                  template: %Solid.Literal{value: "file1", loc: nil},
                   arguments:
                     {:with,
                      {%Solid.Variable{
@@ -159,10 +163,10 @@ defmodule Solid.Tags.RenderTagTest do
                          identifier: "products",
                          loc: %Loc{column: 23, line: 1}
                        },
-                       "file1"
+                       %Solid.Literal{value: "file1", loc: nil}
                      }
                    },
-                   template: "file1"
+                   template: %Solid.Literal{value: "file1", loc: nil}
                  },
                  %ParserContext{
                    column: 37,
@@ -198,7 +202,7 @@ defmodule Solid.Tags.RenderTagTest do
                      }
                    },
                    loc: %Loc{column: 1, line: 1},
-                   template: "file1"
+                   template: %Solid.Literal{value: "file1", loc: nil}
                  },
                  %ParserContext{column: 48, line: 1, mode: :normal, rest: ""}
                }

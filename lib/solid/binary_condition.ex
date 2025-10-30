@@ -22,51 +22,89 @@ defmodule Solid.BinaryCondition do
           right_argument_filters: [Filter.t()]
         }
 
+  defmacro match_empty?(expr) do
+    quote do
+      unquote(expr) in [nil, [], "", %{}, %Empty{}]
+    end
+  end
+
   @spec eval({term, Solid.Lexer.operator(), term}) :: {:ok, boolean} | {:error, binary}
-  def eval({v1, :==, %Empty{}}) when is_map(v1) and not is_struct(v1), do: {:ok, v1 == %{}}
-  def eval({%Empty{}, :==, v2}) when is_map(v2) and not is_struct(v2), do: {:ok, v2 == %{}}
 
-  def eval({v1, :==, %Empty{}}) when is_list(v1), do: {:ok, v1 == []}
-  def eval({%Empty{}, :==, v2}) when is_list(v2), do: {:ok, v2 == []}
+  # == with empty
+  def eval({v1, :==, empty}) when match_empty?(empty) and is_map(v1) and not is_struct(v1),
+    do: {:ok, v1 == %{}}
 
-  def eval({v1, _, %Empty{}}) when is_map(v1) and not is_struct(v1), do: {:ok, false}
-  def eval({%Empty{}, _, v2}) when is_map(v2) and not is_struct(v2), do: {:ok, false}
+  def eval({empty, :==, v2}) when match_empty?(empty) and is_map(v2) and not is_struct(v2),
+    do: {:ok, v2 == %{}}
 
-  def eval({v1, _, v2})
-      when (is_map(v1) or is_map(v2)) and not is_struct(v1) and not is_struct(v2),
-      do: {:ok, false}
+  def eval({v1, :==, empty}) when match_empty?(empty) and is_list(v1), do: {:ok, v1 == []}
+  def eval({empty, :==, v2}) when match_empty?(empty) and is_list(v2), do: {:ok, v2 == []}
 
-  def eval({nil, :contains, _v2}), do: {:ok, false}
-  def eval({_v1, :contains, nil}), do: {:ok, false}
+  def eval({v1, :==, empty}) when match_empty?(empty) and is_binary(v1),
+    do: {:ok, String.trim(v1) == ""}
+
+  def eval({empty, :==, v2}) when match_empty?(empty) and is_binary(v2),
+    do: {:ok, String.trim(v2) == ""}
+
+  # != with empty
+  def eval({v1, :!=, empty}) when match_empty?(empty), do: {:ok, not match_empty?(v1)}
+  def eval({empty, :!=, v2}) when match_empty?(empty), do: {:ok, not match_empty?(v2)}
+  def eval({v1, :<>, empty}) when match_empty?(empty), do: {:ok, not match_empty?(v1)}
+  def eval({empty, :<>, v2}) when match_empty?(empty), do: {:ok, not match_empty?(v2)}
+
+  # contains
+  def eval({nil, :contains, _}), do: {:ok, false}
+  def eval({_, :contains, nil}), do: {:ok, false}
   def eval({v1, :contains, v2}) when is_list(v1), do: {:ok, v2 in v1}
 
   def eval({v1, :contains, v2}) when is_binary(v1) and is_binary(v2),
     do: {:ok, String.contains?(v1, v2)}
 
-  def eval({v1, :contains, v2}) when is_binary(v1), do: {:ok, String.contains?(v1, to_string(v2))}
+  def eval({v1, :contains, v2}) when is_binary(v1),
+    do: {:ok, String.contains?(v1, to_string(v2))}
 
   def eval({_v1, :contains, _v2}), do: {:ok, false}
 
+  # numeric vs nil comparisons
   def eval({v1, :<=, nil}) when is_number(v1), do: {:ok, false}
   def eval({v1, :<, nil}) when is_number(v1), do: {:ok, false}
   def eval({nil, :>=, v2}) when is_number(v2), do: {:ok, false}
   def eval({nil, :>, v2}) when is_number(v2), do: {:ok, false}
 
+  # type mismatch errors
   def eval({v1, op, v2})
-      when op in ~w(< <= > >=)a and is_binary(v1) and is_integer(v2) do
-    {:error, "comparison of String with #{v2} failed"}
-  end
+      when op in [:<, :<=, :>, :>=, :==, :!=, :<>] and is_binary(v1) and is_number(v2),
+      do: eval({to_number(v1), op, v2})
 
   def eval({v1, op, v2})
-      when op in ~w(< <= > >=)a and is_integer(v1) and is_binary(v2) do
-    {:error, "comparison of Integer with String failed"}
-  end
+      when op in [:<, :<=, :>, :>=, :==, :!=, :<>] and is_number(v1) and is_binary(v2),
+      do: eval({v1, op, to_number(v2)})
 
-  def eval({v1, op, v2})
-      when op in ~w(< <= > >=)a and is_float(v1) and is_binary(v2) do
-    {:error, "comparison of Float with String failed"}
-  end
+  # != and <> normalized
+  def eval({v1, :!=, v2}), do: {:ok, v1 != v2}
+  def eval({v1, :<>, v2}), do: {:ok, v1 != v2}
 
-  def eval({v1, :<>, v2}), do: {:ok, apply(Kernel, :!=, [v1, v2])}
-  def eval({v1, op, v2}), do: {:ok, apply(Kernel, op, [v1, v2])}
+  def eval({v1, op, v2}) when op in [:==, :<, :<=, :>, :>=],
+    do: {:ok, apply(Kernel, op, [v1, v2])}
+
+  # Catch-all: unsupported operator
+  def eval({_v1, op, _v2}), do: {:error, "unsupported operator #{inspect(op)}"}
+
+  @int_regex ~r/^-?\d+$/
+  @float_regex ~r/^-?\d+\.\d+$/
+
+  defp to_number(value) do
+    value = String.trim(value)
+
+    cond do
+      Regex.match?(@int_regex, value) ->
+        String.to_integer(value)
+
+      Regex.match?(@float_regex, value) ->
+        String.to_float(value)
+
+      true ->
+        nil
+    end
+  end
 end
