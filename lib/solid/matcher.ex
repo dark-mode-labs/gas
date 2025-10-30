@@ -45,7 +45,6 @@ defimpl Solid.Matcher, for: Map do
       _ ->
         # Check if the key is a special case
         case key do
-          "first" -> @protocol.match(Enum.at(data, 0), keys)
           "size" -> @protocol.match(map_size(data), keys)
           _ -> {:error, :not_found}
         end

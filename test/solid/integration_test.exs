@@ -18,7 +18,7 @@ for scenario <- File.ls!(scenarios_dir) do
     test "scenario #{scenario}" do
       liquid_input = File.read!(@liquid_input_file)
       json_input = File.read!(@json_input_file)
-      opts = [custom_filters: Solid.CustomFilters]
+      opts = []
       assert_render(liquid_input, json_input, @template_directory, opts)
     end
   end

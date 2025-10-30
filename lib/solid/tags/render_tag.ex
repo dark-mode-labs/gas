@@ -78,75 +78,95 @@ defmodule Solid.Tags.RenderTag do
 
   defp template(tokens) do
     case tokens do
-      [{:string, _meta, value, _quotes} | rest] -> {:ok, value, rest}
-      _ -> {:error, "Expected template name as a quoted string", tokens}
+      [{:string, _meta, value, _quotes} | rest] ->
+        {:ok, %Solid.Literal{value: value, loc: nil}, rest}
+
+      [{:identifier, _meta, value} | rest] ->
+        {:ok, %Solid.Variable{identifier: value, original_name: value, accesses: [], loc: nil},
+         rest}
+
+      _ ->
+        {:error, "Expected template name as a quoted string", tokens}
     end
   end
 
   defimpl Solid.Renderable do
     def render(tag, context, options) do
-      cache_module = Keyword.get(options, :cache_module, Solid.Caching.NoCache)
-
-      {file_system, instance} = options[:file_system] || {Solid.BlankFileSystem, nil}
-
-      case file_system.read_template_file(tag.template, instance) do
-        {:ok, template_str} ->
-          do_render(tag, template_str, cache_module, context, options)
-
-        {:error, exception} ->
-          # Enhance exception with the tag location
-          exception = %{exception | loc: tag.loc}
-
-          {"This liquid context does not allow includes.",
-           Solid.Context.put_errors(context, [exception])}
-      end
+      tag
+      |> get_template_name(context, options)
+      |> get_or_put_cache(options)
+      |> do_render(tag, context, options)
     end
 
-    defp do_render(tag, template_str, cache_module, context, options) do
-      cache_key = cache_key(template_str)
+    defp get_template_name(tag, context, options) do
+      {:ok, template_name, _context} = Argument.get(tag.template, context, [], options)
 
-      result =
-        case cache_module.get(cache_key) do
-          {:ok, cached_template} ->
-            {:ok, cached_template}
+      template_name
+    end
 
-          {:error, :not_found} ->
-            parse_and_cache_partial(template_str, options, cache_key, cache_module)
+    defp get_or_put_cache(template, options) do
+      Solid.precompile(
+        template,
+        Keyword.put_new(options, :file_system, {Solid.BlankFileSystem, nil})
+      )
+    end
+
+    defp do_render({:error, %{loc: _} = exception}, tag, context, _options) do
+      {[], Solid.Context.put_errors(context, [%{exception | loc: tag.loc}])}
+    end
+
+    defp do_render({:error, exception}, _tag, context, _options) do
+      {[], Solid.Context.put_errors(context, [exception])}
+    end
+
+    defp do_render({:ok, []}, _tag, context, _options) do
+      {[], context}
+    end
+
+    defp do_render({:ok, {_template_name, %Solid.Template{} = template}}, tag, context, options) do
+      do_render({:ok, template}, tag, context, options)
+    end
+
+    defp do_render({:ok, %Solid.Template{} = template}, tag, context, options) do
+      {inner_contexts, context} = build_contexts(tag.arguments, context, options)
+
+      {rendered_text, context} =
+        Enum.reduce(inner_contexts, {[], context}, fn inner_context, {result, context} ->
+          case Solid.render(template, inner_context, options) do
+            {:ok, rendered_text, errors} ->
+              {[rendered_text | result], Solid.Context.put_errors(context, Enum.reverse(errors))}
+
+            {:error, errors, rendered_text} ->
+              {[rendered_text | result], Solid.Context.put_errors(context, Enum.reverse(errors))}
+          end
+        end)
+
+      {Enum.reverse(rendered_text), context}
+    end
+
+    defp build_contexts({:with, {source, destination}}, outer_context, options) do
+      {:ok, destination, _context} =
+        if is_struct(destination) do
+          Argument.get(destination, outer_context, [], options)
+        else
+          {:ok, destination, outer_context}
         end
 
-      case result do
-        {:ok, template} ->
-          {inner_contexts, context} = build_contexts(tag.arguments, context, options)
-
-          {rendered_text, context} =
-            Enum.reduce(inner_contexts, {[], context}, fn inner_context, {result, context} ->
-              case Solid.render(template, inner_context, options) do
-                {:ok, rendered_text, errors} ->
-                  {[rendered_text | result],
-                   Solid.Context.put_errors(context, Enum.reverse(errors))}
-
-                {:error, errors, rendered_text} ->
-                  {[rendered_text | result],
-                   Solid.Context.put_errors(context, Enum.reverse(errors))}
-              end
-            end)
-
-          {Enum.reverse(rendered_text), context}
-
-        {:error, exception} ->
-          {[], Solid.Context.put_errors(context, [exception])}
-      end
-    end
-
-    defp build_contexts({:with, {source, destination}}, outter_context, options) do
-      {:ok, value, outter_context} = Argument.get(source, outter_context, [], options)
+      {:ok, value, outer_context} = Argument.get(source, outer_context, [], options)
       inner_context = %Context{vars: %{destination => value}}
 
-      {[inner_context], outter_context}
+      {[inner_context], outer_context}
     end
 
-    defp build_contexts({:for, {source, destination}}, outter_context, options) do
-      {:ok, value, outter_context} = Argument.get(source, outter_context, [], options)
+    defp build_contexts({:for, {source, destination}}, outer_context, options) do
+      {:ok, destination, _context} =
+        if is_struct(destination) do
+          Argument.get(destination, outer_context, [], options)
+        else
+          {:ok, destination, outer_context}
+        end
+
+      {:ok, value, outer_context} = Argument.get(source, outer_context, [], options)
 
       if is_list(value) do
         length = Enum.count(value)
@@ -159,22 +179,22 @@ defmodule Solid.Tags.RenderTag do
             %Context{vars: %{destination => v}, iteration_vars: %{"forloop" => forloop}}
           end)
 
-        {inner_contexts, outter_context}
+        {inner_contexts, outer_context}
       else
         inner_context = %Context{vars: %{destination => value}}
-        {[inner_context], outter_context}
+        {[inner_context], outer_context}
       end
     end
 
-    defp build_contexts(args, outter_context, options) do
-      {vars, outter_context} =
-        Enum.reduce(args, {%{}, outter_context}, fn {k, v}, {args, outter_context} ->
-          {:ok, value, outter_context} = Argument.get(v, outter_context, [], options)
-          {Map.put(args, k, value), outter_context}
+    defp build_contexts(args, outer_context, options) do
+      {vars, outer_context} =
+        Enum.reduce(args, {%{}, outer_context}, fn {k, v}, {args, outer_context} ->
+          {:ok, value, outer_context} = Argument.get(v, outer_context, [], options)
+          {Map.put(args, k, value), outer_context}
         end)
 
       inner_context = %Context{vars: vars}
-      {[inner_context], outter_context}
+      {[inner_context], outer_context}
     end
 
     defp build_forloop_map(index, length) do
@@ -187,19 +207,6 @@ defmodule Solid.Tags.RenderTag do
         "last" => length == index + 1,
         "length" => length
       }
-    end
-
-    defp cache_key(template) do
-      :md5
-      |> :crypto.hash(template)
-      |> Base.encode16(case: :lower)
-    end
-
-    defp parse_and_cache_partial(template_str, options, cache_key, cache_module) do
-      with {:ok, template} <- Solid.parse(template_str, options) do
-        cache_module.put(cache_key, template)
-        {:ok, template}
-      end
     end
   end
 end

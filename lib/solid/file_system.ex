@@ -40,6 +40,18 @@ defmodule Solid.BlankFileSystem do
   end
 end
 
+defmodule Solid.PassThroughFileSystem do
+  @moduledoc """
+  Default file system that return error on call
+  """
+  @behaviour Solid.FileSystem
+
+  @impl true
+  def read_template_file(template, _opts) do
+    {:ok, template}
+  end
+end
+
 defmodule Solid.LocalFileSystem do
   @moduledoc """
   This implements an abstract file system which retrieves template files named in a manner similar to Liquid.
@@ -69,24 +81,27 @@ defmodule Solid.LocalFileSystem do
       # => "/some/path/index.html"
 
   """
-  defstruct [:root, :pattern]
+  defstruct [:root, :pattern, :pre_processor]
   @behaviour Solid.FileSystem
 
-  def new(root, pattern \\ "_%s.liquid") do
+  def new(root, pattern \\ "_%s.liquid", pre_processor \\ Solid.PassThroughPreProcessor) do
     %__MODULE__{
       root: root,
-      pattern: pattern
+      pattern: pattern,
+      pre_processor: pre_processor
     }
   end
 
   @impl true
-  def read_template_file(template_path, file_system) do
-    with {:ok, full_path} <- full_path(template_path, file_system) do
-      if File.exists?(full_path) do
-        {:ok, File.read!(full_path)}
-      else
+  def read_template_file(template_path, %__MODULE__{} = file_system) do
+    with {:ok, full_path} <- full_path(template_path, file_system),
+         {:exists, true} <- {:exists, File.exists?(full_path)},
+         content <- File.read!(full_path),
+         processed <- file_system.pre_processor.process(template_path, content) do
+      {:ok, processed}
+    else
+      {:exists, false} ->
         {:error, %Solid.FileSystem.Error{reason: "No such template '#{template_path}'"}}
-      end
     end
   end
 

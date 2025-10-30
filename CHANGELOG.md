@@ -6,7 +6,7 @@
 
 ## Bug fixes
 
-* Return `{:error, errors}` tuple when both strict_filters and strict_variables are enforced while rendering a template
+* Return `{:error, errors}` tuple when strict_variables are enforced while rendering a template
 * Use correct variable name in the `Solid.UndefinedVariableError` message
 * Fix `strip_html` filter to handle multiline comments
 * Fix nil argument for `replace_last` filter
@@ -112,20 +112,6 @@ Unexpected tag 'endunless'
 |> Solid.render(%{})
 
 {:ok, ["1"], []}
-```
-
-```elixir
-"{{ 1 | my_sum }}"
-|> Solid.parse!()
-|> Solid.render(%{}, strict_filters: true)
-
-{:error,
- [
-   %Solid.UndefinedFilterError{
-     filter: "my_sum",
-     loc: %Solid.Parser.Loc{line: 1, column: 8}
-   }
- ], ["1"]}
 ```
 
 * `Solid.FileSystem.read_template_file/2` now must return a tuple with the file content or an error tuple.

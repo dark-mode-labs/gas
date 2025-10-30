@@ -107,7 +107,7 @@ defmodule Solid.ParserTest do
               entries = [
                 %Solid.Tags.AssignTag{},
                 %Solid.Text{text: "\n "},
-                %Solid.Tags.CommentTag{},
+                %Solid.Tags.NoOpTag{},
                 %Solid.Text{text: "\n"},
                 %Solid.Tags.InlineCommentTag{},
                 %Solid.Text{text: "\n"}
@@ -115,7 +115,7 @@ defmodule Solid.ParserTest do
 
       assert [
                %Solid.Tags.AssignTag{},
-               %Solid.Tags.CommentTag{},
+               %Solid.Tags.NoOpTag{},
                %Solid.Tags.InlineCommentTag{}
              ] = Parser.remove_blank_text_if_blank_body(entries)
     end
@@ -134,7 +134,7 @@ defmodule Solid.ParserTest do
               entries = [
                 %Solid.Tags.AssignTag{},
                 %Solid.Text{text: "\n1 "},
-                %Solid.Tags.CommentTag{},
+                %Solid.Tags.NoOpTag{},
                 %Solid.Text{text: "\n2 "},
                 %Solid.Tags.InlineCommentTag{},
                 %Solid.Text{text: "\n3\n"}
@@ -159,7 +159,7 @@ defmodule Solid.ParserTest do
                 %Solid.Text{},
                 %Solid.Tags.EchoTag{},
                 %Solid.Text{},
-                %Solid.Tags.CommentTag{},
+                %Solid.Tags.NoOpTag{},
                 %Solid.Text{},
                 %Solid.Tags.InlineCommentTag{},
                 %Solid.Text{}
@@ -1397,7 +1397,7 @@ defmodule Solid.ParserTest do
                  :ok,
                  [
                    %Solid.Text{loc: %Parser.Loc{column: 1, line: 1}, text: "1\n"},
-                   %Solid.Tags.CommentTag{loc: %Parser.Loc{column: 1, line: 2}},
+                   %Solid.Tags.NoOpTag{loc: %Parser.Loc{column: 1, line: 2}},
                    %Solid.Text{loc: %Parser.Loc{column: 17, line: 4}, text: "\n2\n"},
                    %Solid.Object{
                      loc: %Solid.Parser.Loc{column: 4, line: 6},
@@ -1425,7 +1425,7 @@ defmodule Solid.ParserTest do
       assert parse(template) == {
                :ok,
                [
-                 %Solid.Tags.CommentTag{loc: %Parser.Loc{column: 10, line: 1}},
+                 %Solid.Tags.NoOpTag{loc: %Parser.Loc{column: 10, line: 1}},
                  %Solid.Text{loc: %Parser.Loc{column: 3, line: 4}, text: "\n"}
                ]
              }
