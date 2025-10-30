@@ -97,7 +97,7 @@ defmodule Solid.LocalFileSystem do
     with {:ok, full_path} <- full_path(template_path, file_system),
          {:exists, true} <- {:exists, File.exists?(full_path)},
          content <- File.read!(full_path),
-         processed <- file_system.pre_processor.expand(template_path, content) do
+         processed <- file_system.pre_processor.process(template_path, content) do
       {:ok, processed}
     else
       {:exists, false} ->
