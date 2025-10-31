@@ -28,6 +28,10 @@ defmodule Solid.Tags.RenderTagTest do
       {:ok, "{{ item['key'] }}"}
     end
 
+    def read_template_file("dotted_arg", _opts) do
+      {:ok, "{{ arg.sub-arg }} {{ arg2}}"}
+    end
+
     def read_template_file("forloop", _opts) do
       {:ok,
        "{{forloop.key}}{{ forloop.index }}{{ forloop.rindex }}{{ forloop.first }}{{ forloop.last }}{{ forloop.length }}"}
@@ -301,6 +305,17 @@ defmodule Solid.Tags.RenderTagTest do
                   ["value1", "1", "2", "true", "false", "2"],
                   ["value2", "2", "1", "false", "true", "2"]
                 ], context}
+    end
+
+    test "renders with dotted arg" do
+      template = ~s<{% render "dotted_arg", arg.sub-arg: var1, arg2: var2 %}>
+      context = %Solid.Context{vars: %{"var1" => "mickey", "var2" => "mouse"}}
+
+      {:ok, tag, _rest} = parse(template)
+      options = [file_system: {TestFileSystem, nil}]
+
+      assert Solid.Renderable.render(tag, context, options) ==
+               {[["mickey", " ", "mouse"]], context}
     end
   end
 end
