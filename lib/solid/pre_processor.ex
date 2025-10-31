@@ -1,5 +1,5 @@
 defmodule Solid.Preprocessor do
-  @callback process(template :: binary(), options :: Keyword.t()) :: binary()
+  @callback process(template_or_path :: binary(), content :: binary()) :: binary()
 end
 
 defmodule Solid.PassThroughPreProcessor do
@@ -9,7 +9,7 @@ defmodule Solid.PassThroughPreProcessor do
   @behaviour Solid.Preprocessor
 
   @impl true
-  def process(template, _opts) do
-    template
+  def process(template_or_path, _content) do
+    template_or_path
   end
 end

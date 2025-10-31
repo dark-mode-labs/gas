@@ -15,8 +15,11 @@ defmodule Solid.Caching.EtsCache do
     ensure_cache()
 
     case :ets.lookup(@cache, cache_key) do
-      [] -> {:error, :not_found}
-      [entry] -> {:ok, entry}
+      [] ->
+        {:error, :not_found}
+
+      [{^cache_key, entry}] ->
+        {:ok, entry}
     end
   end
 

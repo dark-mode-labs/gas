@@ -1070,9 +1070,11 @@ defmodule Solid.Filters.Filter.I18n do
     end
   end
 
+  defp replace_vars(nil, _vars), do: nil
+
   defp replace_vars(text, %{} = vars) when is_binary(text) do
     Enum.reduce(vars, text, fn {key, value}, acc ->
-      String.replace(acc, "{{ #{key} }}", value)
+      String.replace(acc, "{{ #{key} }}", to_string(value))
     end)
   end
 
