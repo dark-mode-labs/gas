@@ -330,6 +330,7 @@ end
 # lib/solid/filter/collection.ex
 defmodule Solid.Filters.Filter.Collection do
   @moduledoc "Array and collection filters"
+  require Solid.BinaryCondition
   import Solid.Filters.Filter.Utils
 
   def first(list) when is_list(list), do: List.first(list)
@@ -366,7 +367,15 @@ defmodule Solid.Filters.Filter.Collection do
   def uniq(input), do: input |> to_enum() |> Enum.uniq()
 
   def sort(input), do: input |> to_enum() |> Enum.sort()
-  def sort(input, key), do: Enum.sort_by(input, & &1[key])
+
+  def sort(input, key) do
+    Enum.sort_by(input, fn element ->
+      case Solid.Matcher.match(element, List.wrap(key)) do
+        {:ok, value} -> value
+        _ -> nil
+      end
+    end)
+  end
 
   def sort_natural(input) when is_list(input) or is_struct(input, Range) do
     input
@@ -439,13 +448,23 @@ defmodule Solid.Filters.Filter.Collection do
     end)
   end
 
-  def where(input, key, value) do
-    if value == nil do
-      where(input, key)
-    else
-      input = to_enum(input)
-      for map <- input, is_map(map), Map.has_key?(map, key), map[key] == value, do: map
-    end
+  def where(empty_input, _key, _value) when Solid.BinaryCondition.match_empty?(empty_input),
+    do: []
+
+  def where(input, key, value) when not is_list(key) do
+    where(input, [key], value)
+  end
+
+  def where([_ | _] = input, key, value) do
+    Enum.filter(input, fn element ->
+      case Solid.Matcher.match(element, key) do
+        {:ok, resolved_value} ->
+          Solid.BinaryCondition.eval({value, :==, resolved_value}) == {:ok, true}
+
+        _ ->
+          false
+      end
+    end)
   end
 
   def where(input, key) do
@@ -458,6 +477,12 @@ defmodule Solid.Filters.Filter.Collection do
       if is_map(item) && Map.has_key?(item, key), do: [item], else: []
     end)
   end
+
+  def map_values(%{} = map), do: Map.values(map)
+  def map_values(_other), do: []
+
+  def map_keys(%{} = map), do: Map.keys(map)
+  def map_keys(_other), do: []
 end
 
 # lib/solid/filter/date.ex
@@ -687,7 +712,7 @@ defmodule Solid.Filters.Filter.Asset do
 
   require Logger
 
-  def image_url(invalid_link, _opts) when invalid_link in [nil, ""], do: nil
+  def image_url(invalid_link, _opts) when invalid_link in [nil, "", [""]], do: nil
 
   def image_url(asset, opts) do
     case URI.new(asset) do
@@ -709,27 +734,22 @@ defmodule Solid.Filters.Filter.Asset do
         nil
 
       valid ->
-        "/theme/fonts/#{valid}"
+        Path.join(theme_base(), valid)
     end
   end
 
   defp asset_src(src, "stylesheet") do
     """
-    <link rel="stylesheet" href="/theme/assets/#{src}.css"} />
+    <link rel="stylesheet" href="#{Path.join(theme_base(), [src, ".css"])}"} />
     """
   end
 
   defp asset_src(src, nil) do
-    cond do
-      String.ends_with?(src, ".js") ->
-        "/theme/assets/js/#{src}"
+    Path.join(theme_base(), src)
+  end
 
-      String.ends_with?(src, ".css") ->
-        "/theme/assets/css/#{src}"
-
-      true ->
-        raise("unsure what asset src this is #{src}")
-    end
+  defp theme_base do
+    "/theme/assets/"
   end
 end
 
@@ -875,8 +895,7 @@ defmodule Solid.Filters.Filter.HTML do
   defp escape_attr(v), do: to_string(v)
 
   defp theme_base do
-    Application.get_env(:solid, :theme_base, "")
-    |> Path.join("/images")
+    Path.join(Application.get_env(:solid, :theme_base, ""), "/assets")
   end
 end
 
@@ -976,7 +995,9 @@ end
 defmodule Solid.Filters.Filter.Format do
   @moduledoc "Formatting filters like money"
 
-  def money(input, opts \\ []) do
+  def money(input), do: money(input, [])
+
+  def money(input, opts) do
     symbol =
       case opts[:without_symbol] do
         true -> ""
@@ -1004,6 +1025,9 @@ defmodule Solid.Filters.Filter.Format do
 
   defp money_format(input, symbol) when is_float(input),
     do: format_money_amount(input, symbol)
+
+  defp money_format(%Decimal{} = input, symbol),
+    do: format_money_amount(Decimal.to_float(input), symbol)
 
   defp format_money_amount(amount, symbol) do
     formatted =
@@ -1168,9 +1192,12 @@ defmodule Solid.Filters.Filter do
   defdelegate find_index(xs, key, value), to: Collection
   defdelegate where(xs, key), to: Collection
   defdelegate where(xs, key, val), to: Collection
+  defdelegate map_values(map), to: Collection
+  defdelegate map_keys(map), to: Collection
 
   # Delegates: date
   defdelegate date(x, fmt), to: Date
+  defdelegate time_tag(x, fmt), to: Date, as: :date
 
   # Delegates: color
   defdelegate color_brightness(hex), to: Color

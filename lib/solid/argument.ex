@@ -181,6 +181,7 @@ defmodule Solid.Argument do
 
     case do_get(arg, context, scopes, opts) do
       {:ok, value, context} ->
+        {value, context} = maybe_apply_interpolation(value, context, opts)
         {value, context} = apply_filters(value, filters, context, opts)
         {:ok, value, context}
 
@@ -223,6 +224,27 @@ defmodule Solid.Argument do
       end
 
     {:ok, start..finish//1, context}
+  end
+
+  defp maybe_apply_interpolation(input, context, opts) when is_bitstring(input) do
+    if String.contains?(input, "{{") and String.contains?(input, "}}") do
+      with {:ok, parsed} <- Solid.parse(input, opts),
+           {:ok, rendered_text, errors} <- Solid.render(parsed, context, opts) do
+        {rendered_text, Context.put_errors(context, Enum.reverse(errors))}
+      else
+        {:error, %Solid.TemplateError{} = error} ->
+          {input, Context.put_errors(context, error)}
+
+        {:error, errors, rendered_text} ->
+          {rendered_text, Context.put_errors(context, Enum.reverse(errors))}
+      end
+    else
+      {input, context}
+    end
+  end
+
+  defp maybe_apply_interpolation(input, context, _opts) do
+    {input, context}
   end
 
   defp apply_filters(input, nil, context, _opts), do: {input, context}
