@@ -37,5 +37,34 @@ defmodule Solid.StandardFilterTest do
                   loc: %Solid.Parser.Loc{line: 1, column: 1}
                 }}
     end
+
+    test "where filter test" do
+      assert StandardFilter.apply(
+               "where",
+               [[%{"arg" => "Hi"}, %{"arg" => "Hello"}], "arg", "Hello"],
+               @loc,
+               []
+             ) == {:ok, [%{"arg" => "Hello"}]}
+
+      assert StandardFilter.apply(
+               "where",
+               [
+                 [%{"name" => "Hello", "key" => "hello"}, %{"name" => "Null", "key" => nil}],
+                 "key",
+                 nil
+               ],
+               @loc,
+               []
+             ) == {:ok, [%{"key" => nil, "name" => "Null"}]}
+    end
+
+    test "sort filter test" do
+      assert StandardFilter.apply(
+               "sort",
+               [[%{"arg" => "5"}, %{"arg" => "1"}, %{"arg" => "4"}, %{"arg" => "2"}], "arg"],
+               @loc,
+               []
+             ) == {:ok, [%{"arg" => "1"}, %{"arg" => "2"}, %{"arg" => "4"}, %{"arg" => "5"}]}
+    end
   end
 end

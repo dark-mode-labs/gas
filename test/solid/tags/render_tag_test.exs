@@ -317,5 +317,17 @@ defmodule Solid.Tags.RenderTagTest do
       assert Solid.Renderable.render(tag, context, options) ==
                {[["mickey", " ", "mouse"]], context}
     end
+
+    test "interpolation within interpolation" do
+      template = ~s<{% render "dotted_arg", arg.sub-arg: var1, arg2: var2 %}>
+      context = %Solid.Context{vars: %{"var1" => "mickey", "var2" => "<h1>{{ var1 }} mouse</h1>"}}
+
+      {:ok, tag, _rest} = parse(template)
+
+      options = [file_system: {TestFileSystem, nil}]
+
+      assert Solid.Renderable.render(tag, context, options) ==
+               {[["mickey", " ", "<h1>mickey mouse</h1>"]], context}
+    end
   end
 end
