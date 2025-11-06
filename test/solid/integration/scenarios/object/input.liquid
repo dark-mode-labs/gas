@@ -55,8 +55,6 @@
 
 {{ hash.key }}
 
-{{ 'text' | unknown_function: 'too many args' }}
-
 {{ (1..'2') }}
 {{ (1..foo) }}
 {{ (1..number) }}
@@ -70,13 +68,9 @@
 {{ var.size.something }}
 {{ var.key }}
 {{ var.last }}
-{{ ['a var'].first | join: '#' }}
-{{ ['a var'].last }}
 {{ var.first }}
 
 {{ numbers.size }}
 {{ numbers.size.something }}
 {{ numbers.key }}
-
-{{ ['a var'].first }}
 

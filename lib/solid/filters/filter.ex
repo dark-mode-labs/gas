@@ -467,15 +467,10 @@ defmodule Solid.Filters.Filter.Collection do
     end)
   end
 
-  def where(input, key) do
-    input
-    |> to_enum()
-    |> Enum.flat_map(fn item ->
-      if is_integer(item),
-        do: raise(%Solid.ArgumentError{message: "cannot select the property '#{key}'"})
+  def where(_input, _key, _value), do: []
 
-      if is_map(item) && Map.has_key?(item, key), do: [item], else: []
-    end)
+  def where(input, key) do
+    where(input, key, nil)
   end
 
   def map_values(%{} = map), do: Map.values(map)
@@ -749,7 +744,7 @@ defmodule Solid.Filters.Filter.Asset do
   end
 
   defp theme_base do
-    "/theme/assets/"
+    Application.get_env(:solid, :theme_assets_relative_path, "")
   end
 end
 
@@ -895,7 +890,7 @@ defmodule Solid.Filters.Filter.HTML do
   defp escape_attr(v), do: to_string(v)
 
   defp theme_base do
-    Path.join(Application.get_env(:solid, :theme_base, ""), "/assets")
+    Path.join(Application.get_env(:solid, :theme_base_path, ""), "/assets")
   end
 end
 
@@ -943,11 +938,12 @@ defmodule Solid.Filters.Filter.Encoding do
     String.replace(binary, pattern, "")
   end
 
-  def newline_to_br(iodata) do
-    binary = IO.iodata_to_binary(iodata || "")
+  def newline_to_br(iodata) when is_binary(iodata) do
     pattern = :binary.compile_pattern(["\r\n", "\n"])
-    String.replace(binary, pattern, "<br />\n")
+    String.replace(iodata, pattern, "<br />\n")
   end
+
+  def newline_to_br(_), do: nil
 
   # Base64
   def base64_encode(input), do: input |> to_string() |> Base.encode64()

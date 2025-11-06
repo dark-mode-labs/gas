@@ -7,6 +7,7 @@ for scenario <- File.ls!(scenarios_dir) do
     use ExUnit.Case, async: true
     import Solid.Helpers
     @moduletag :integration
+    @moduletag :"#{scenario}Test"
 
     @liquid_input_file "#{scenarios_dir}/#{scenario}/input.liquid"
     @json_input_file "#{scenarios_dir}/#{scenario}/input.json"

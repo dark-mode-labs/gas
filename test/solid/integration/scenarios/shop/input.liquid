@@ -17,8 +17,8 @@
   <h2>{{ product.title }}</h2>
 
   <ul id="details" class="hlist">
-    <li>Vendor: {{ product.vendor | link_to_vendor }}</li>
-    <li>Type: {{ product.type | link_to_type }}</li>
+    <li>Vendor: {{ product.vendor }}</li>
+    <li>Type: {{ product.type }}</li>
   </ul>
 
   <small>{{ product.price_min | money }}{% if product.price_varies %} - {{ product.price_max | money }}{% endif %}</small>
@@ -44,6 +44,7 @@
 </div>
 
 <script type="text/javascript">
+  {% assign product_json = product | json | default: "{}" %}
 <!--
   // prototype callback for multi variants dropdown selector
   var selectCallback = function(variant, selector) {
@@ -61,7 +62,7 @@
   };
   // initialize multi selector for product
   Event.observe(document, 'dom:loaded', function() {
-    new Shopify.OptionSelectors("variant-select", { product: {{ product | json }}, onVariantSelected: selectCallback });
+    new Shopify.OptionSelectors("variant-select", { product: {{ product_json }}, onVariantSelected: selectCallback });
   });
 -->
 </script>

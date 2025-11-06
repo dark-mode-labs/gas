@@ -418,7 +418,7 @@ defmodule Solid.ArgumentTest do
 
       context = %Solid.Context{vars: %{"key" => 123}}
 
-      assert {:ok, "Liquid error (line 1): wrong number of arguments (given 2, expected /1)",
+      assert {:ok, "Liquid error (line 1): wrong number of arguments (given 2, expected 1)",
               context} =
                Argument.get(arg, context, filters)
 
@@ -427,7 +427,7 @@ defmodule Solid.ArgumentTest do
                  filter: "upcase",
                  loc: @loc,
                  arity: 2,
-                 expected_arity: "/1"
+                 expected_arity: "1"
                }
              ]
     end

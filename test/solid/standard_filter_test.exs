@@ -24,7 +24,7 @@ defmodule Solid.StandardFilterTest do
                  filter: "upcase",
                  loc: %Solid.Parser.Loc{column: 1, line: 1},
                  arity: 3,
-                 expected_arity: "/1"
+                 expected_arity: "1"
                }
              }
     end
