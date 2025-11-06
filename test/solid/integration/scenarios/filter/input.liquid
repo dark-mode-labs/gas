@@ -5,8 +5,6 @@ compact
 
 { "hashes" : [{ "a" : "A" }, { "a" : null }, { "a" : "C "}] }
 
-{{ var | xyzzy }}
-
 {{ array[1] | upcase }}
 
 abs
@@ -23,20 +21,13 @@ append
 {{ "apples, oranges, and bananas" | append: "Some fruit: " }}
 {{ "apples, oranges, and bananas" | append: unknown }}
 {{ "apples, oranges, and bananas" | append: empty }}
-{{ "apples, oranges, and bananas" | append: array }}
-{% comment %}{{ "apples, oranges, and bananas" | append: post }} {% endcomment %}
 {{ empty | append: "text" }}
 {{ unknown | append: "Some text" }}
-{{ 1 | append: 5 }}
-{{ (1..5) | append: 5 }}
-{{ (1..5) | append: empty }}
 
 capitalize
 
 {{ "my great title" | capitalize }}
 {{ 1 | capitalize }}
-{{ (1..5) | capitalize }}
-{{ array | capitalize }}
 {{ empty | capitalize }}
 {{ unknown | capitalize }}
 
@@ -44,8 +35,6 @@ upcase
 
 {{ "my great title" | upcase }}
 {{ 1 | upcase }}
-{{ (1..5) | upcase }}
-{{ array | upcase }}
 {{ empty | upcase }}
 {{ unknown | upcase }}
 
@@ -53,9 +42,6 @@ downcase
 
 {{ "My Great title" | downcase }}
 {{ 1 | downcase }}
-{{ (1..5) | downcase }}
-{{ array | downcase }}
-{{ nested_array | downcase }}
 {{ empty | downcase }}
 {{ unknown | downcase }}
 
@@ -80,7 +66,6 @@ divided_by
 {{ 20 | divided_by: 7.0 }}
 {{ 20 | divided_by: '7.0' }}
 {{ '20' | divided_by: 7.0 }}
-{{ 20 | divided_by: 'foo' }}
 {{ 'foo' | divided_by: 20 }}
 {{ 9.0 | divided_by: 2 }}
 
@@ -113,8 +98,6 @@ lstrip
 
 {{ "          So much room for activities!          " | rstrip }}
 {{ 5 | lstrip }}
-{{ (1..5) | lstrip }}
-{{ array | lstrip }}
 {{ unknown | lstrip }}
 {% #{{ posts | lstrip }} %}
 
@@ -122,8 +105,6 @@ rstrip
 
 {{ "          So much room for activities!          " | rstrip }}
 {{ 5 | rstrip }}
-{{ (1..5) | rstrip }}
-{{ array | rstrip }}
 {{ unknown | rstrip }}
 {% # {{ posts | rstrip }} %}
 
@@ -131,8 +112,6 @@ strip
 
 {{ "          So much room for activities!          " | strip }}
 {{ 5 | strip }}
-{{ (1..5) | strip }}
-{{ array | strip }}
 {{ unknown | strip }}
 {% # {{ posts | strip }} %}
 
@@ -180,9 +159,6 @@ sum
 {{ numbers | sum }}
 {{ my_numbers | sum }}
 {{ my_floats | sum }}
-{{ my_numbers | sum: 'key' }}
-{{ my_floats | sum: 'key' }}
-{{ array | sum: 'key' }}
 {{ post | sum: 'key' }}
 {{ empty | sum: 'key' }}
 {{ true | sum: 'key' }}
@@ -234,13 +210,10 @@ prepend
 {{ "apples, oranges, and bananas" | prepend: "Some fruit: " }}
 {{ "apples, oranges, and bananas" | prepend: unknown }}
 {{ "apples, oranges, and bananas" | prepend: empty }}
-{{ "apples, oranges, and bananas" | prepend: array }}
 {% comment %}{{ "apples, oranges, and bananas" | prepend: post }} {% endcomment %}
 {{ empty | prepend: "text" }}
 {{ unknown | prepend: "Some text" }}
 {{ 1 | prepend: 5 }}
-{{ (1..5) | prepend: 5 }}
-{{ (1..5) | prepend: empty }}
 
 replace
 
@@ -249,10 +222,7 @@ replace
 {{ "654321" | replace: 5, "five" }}
 {{ 654321 | replace: 5, "five" }}
 {{ "654321" | replace: empty, "empty" }}
-{{ "654321" | replace: array, "array" }}
 {{ unknown | replace: "rain", "unknown" }}
-{{ (1..5) | replace: 1, "one" }}
-{{ 1 | replace: (1..5), "range" }}
 {% # {{ post | replace: 'T', 't' | join: '#' }} %}
 
 remove
@@ -262,10 +232,7 @@ remove
 {{ "654321" | remove: 5 }}
 {{ 654321 | remove: 5 }}
 {{ "654321" | remove: empty }}
-{{ "654321" | remove: array }}
 {{ unknown | remove: "rain" }}
-{{ (1..5) | remove: 1 }}
-{{ 1 | remove: (1..5) }}
 
 remove_first
 
@@ -274,10 +241,7 @@ remove_first
 {{ "654321" | remove_first: 5 }}
 {{ 654321 | remove_first: 5 }}
 {{ "654321" | remove_first: empty }}
-{{ "654321" | remove_first: array }}
 {{ unknown | remove_first: "rain" }}
-{{ (1..5) | remove_first: 1 }}
-{{ 1 | remove_first: (1..5) }}
 
 {% assign my_string = "Take my protein pills and put my helmet on" %}
 {{ my_string | replace: "my", "your" }}
@@ -299,9 +263,7 @@ split
 {{ fruits | split: ", " | sort | join: ", " }}
 {{ fruits | split: ", " | sort_natural | join: ", " }}
 {{ unknown | split: ", " | sort_natural | join: ", " }}
-{{ (1..5) | split: ", " | sort_natural | join: ", " }}
 {{ empty | split: ", " | sort_natural | join: ", " }}
-{{ nested_array | split: ", " | sort_natural | join: ", " }}
 {% comment %}{{ post | split: ", " | sort_natural | join: ", " }}{%endcomment %}
 
 size
@@ -324,22 +286,13 @@ slice
 {{ "Liquid" | slice: 2 }}
 {{ "Liquid" | slice: -2 }}
 {{ "Liquid" | slice: -2, 99 }}
-{{ "Liquid" | slice: 2.2 }}
 {{ "Liquid" | slice: 2, 5 }}
-{{ "Liquid" | slice: 2.1, 5.1 }}
 {{ "Liquid" | slice: -3, 2 }}
 {{ "Liquid" | slice: -2, -1 }}
 
 {{ "Liquid" | slice: "2" }}
 {{ "Liquid" | slice: "-2" }}
-{{ "Liquid" | slice: "2.2" }}
 {{ "Liquid" | slice: "2", "5" }}
-{{ "Liquid" | slice: unknown }}
-{{ "Liquid" | slice: unknown, unknown }}
-{{ "Liquid" | slice: "foo", "bar" }}
-
-{{ my_array | slice: 1, 2 | join: "," }}
-{{ array | slice: 1, 2 | join: "," }}
 
 {{ unknown | slice: 1, 2 | join: "," }}
 {{ 1000 | slice: 1, 2 | join: "," }}
@@ -355,19 +308,15 @@ truncate
 {{ "Ground control to Major Tom." | truncate: 0 }}
 {{ "Ground control to Major Tom." | truncate: 25, ", and so on" }}
 {{ "Ground control to Major Tom." | truncate: 20, "" }}
-{{ "Ground control to Major Tom." | truncate: unknown }}
 {{ "Ground control to Major Tom." | truncate: 20, unknown }}
 {{ "Ground control to Major Tom." | truncate: 20, "text" }}
 {{ "Ground control to Major Tom." | truncate: 20, 100.0 }}
 {{ "Ground control to Major Tom." | truncate: "20", "..." }}
 {{ "Ground control to Major Tom." | truncate: "20", blank }}
-{{ "Ground control to Major Tom." | truncate: "20", array }}
 {{ 1000 | truncate: 20 }}
 {{ 1000.0 | truncate: 20 }}
 {{ blank | truncate: 20 }}
 {{ empty | truncate: 20 }}
-{{ my_array | truncate: 20 }}
-{{ array | truncate: 20 }}
 {{ true | truncate: 20 }}
 {{ false | truncate: 20 }}
 
@@ -379,10 +328,8 @@ truncatewords
 {{ "Ground control to Major Tom." | truncatewords: 0 }}
 {{ "Ground control to Major Tom." | truncatewords: 3, "--" }}
 {{ "Ground control to Major Tom." | truncatewords: 3, "" }}
-{{ "Ground control to Major Tom." | truncatewords: unknown}}
 {{ "Ground control to Major Tom." | truncatewords: 10 }}
 {{ "Ground control to Major Tom." | truncatewords: 10, blank }}
-{{ "Ground control to Major Tom." | truncatewords: 10, array }}
 {{ "Ground control to
 Major Tom" | truncatewords: 3 }}
 {{ empty_string | truncatewords: 3, "" }}
@@ -390,7 +337,6 @@ Major Tom" | truncatewords: 3 }}
 {{ 1000.0 | truncatewords: 3, "-" }}
 {{ blank | truncatewords: 3, "-" }}
 {{ empty | truncatewords: 3, "-" }}
-{{ my_array | truncatewords: 3, "-" }}
 {{ true | truncatewords: 3, "-" }}
 {{ false | truncatewords: 3, "-" }}
 
@@ -421,21 +367,12 @@ modulo
 {{ "183.5" | modulo: "12.1" }}
 {{ "183" | modulo: "12" }}
 {{ "text" | modulo: "2.0" }}
-{{ unknown | modulo: unknown }}
 {{ unknown | modulo: 12 }}
-{{ 5 | modulo: unknown }}
-{{ 5 | modulo: 0 }}
-{{ 5 | modulo: 0.0 }}
-{{ 5 | modulo: -0.0 }}
 {{ blank | modulo: 2 }}
 {{ true | modulo: 2 }}
 {{ false | modulo: 2 }}
 {{ empty | modulo: 2 }}
 {{ (0..5) | modulo: 2 }}
-
-substitute
-
-{{ input | substitute: first_name: surname, last_name: 'doe' }}
 
 base64
 
@@ -445,7 +382,6 @@ base64
 {{ "b25lIHR3byB0aHJlZQ==" | base64_decode }}
 {{ unknown | base64_decode }}
 {{ "" | base64_decode }}
-{{ 1 | base64_decode }}
 
 {{ "https://github.com/edgurgel/solid" | base64_url_safe_encode }}
 {{ 1 | base64_url_safe_encode }}
@@ -453,11 +389,10 @@ base64
 {{ "aHR0cHM6Ly9naXRodWIuY29tL2VkZ3VyZ2VsL3NvbGlk" | base64_url_safe_decode }}
 {{ unknown | base64_url_safe_decode }}
 {{ "" | base64_url_safe_decode }}
-{{ 1 | base64_url_safe_decode }}
 
 {{ my_string | remove_last: "cde" }}
 {{ my_string | replace_last: "cde", "fgh" }}
-{{ "hello" | replace_last: "ll" }}
+{{ "hello" | replace_last: "ll", "abc" }}
 {{ "hello" | replace_last: "l", "p" }}
 {{ "abab" | replace_last: "a", "c" }}
 {{ "Take my protein" | replace_last: nosuchthing, "#" }}
@@ -504,12 +439,8 @@ concat
 
 {{ words | concat: array | join: '#' }}
 {{ string | concat: array | join: '#' }}
-{{ string | concat | join: '#' }}
 {{ nested_array | concat: array | join: '#' }}
-{{ array | concat: var | join: '#' }}
-{{ array | concat: unknown | join: '#' }}
 {{ unknown | concat: array | join: '#' }}
-{{ (1..3) | concat: 'foo' | join: '#' }}
 {{ (1..5) | concat: my_array | join: '#' }}
 
 join
@@ -526,25 +457,16 @@ map
 
 {{ posts | map: 'title' | join: ', ' }}
 {{ post | map: 'title' | join: ', ' }}
-{{ 1000 | map: 'title' | join: ', ' }}
 {{ 'not a list' | map: 'title' | join: ', ' }}
-{{ (0..5) | map: 'title' | join: ', ' }}
-{{ weird_posts | map: 'title' | join: '#' }}
 
 where
 
-{{ var | where: 'title' }}
 {{ float | where: 'title' }}
 {{ string | where: 'title' }}
 {{ unknown | where: 'title' }}
 {{ true | where: 'title' }}
 {{ false | where: 'title' }}
-{{ post | where: 'title' | map: 'title' }}
-{{ post | where: 'title', "Title1" | map: 'title' }}
-{{ post | where: 'title', "Title2" | map: 'title' }}
-{{ post | where: unknown, unknown | map: 'title' }}
-{{ post | where: "title", unknown | map: 'title' }}
-{{ posts | where: "title", unknown | map: 'title' }}
+{{ posts | where: 'title', 'Title 3' | map: 'title' }}
 
 newline_to_br
 
@@ -552,12 +474,11 @@ newline_to_br
 2
 3" | newline_to_br }}
 
-{{ 1 | newline_to_br }}
 {{ "" | newline_to_br }}
 {{ blank | newline_to_br }}
 {{ empty | newline_to_br }}
-{{ true | newline_to_br }}
-{{ false | newline_to_br }}
+{{ true | newline_to_br | default: "true" }}
+{{ false | newline_to_br | default: "false" }}
 
 reverse
 

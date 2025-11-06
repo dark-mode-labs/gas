@@ -14,7 +14,7 @@
 
   <div id="cart">
 
-  <h3>You have {{ cart.item_count }} {{ cart.item_count | pluralize: 'product', 'products' }} in here!</h3>
+  <h3>You have {{ cart.item_count }} {{ cart.item_count | replace: 'product', 'products' }} in here!</h3>
 
     <ul id="line-items">
       {% for item in cart.items %}

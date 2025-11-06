@@ -46,7 +46,7 @@ defmodule Solid.StandardFilter do
          loc: loc,
          filter: func,
          arity: asked_arity,
-         expected_arity: Enum.map_join(arities, ",", &"/#{&1}")
+         expected_arity: Enum.map_join(arities, "/", &"#{&1}")
        }}
     end
   end

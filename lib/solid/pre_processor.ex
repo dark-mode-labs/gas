@@ -9,7 +9,11 @@ defmodule Solid.PassThroughPreProcessor do
   @behaviour Solid.Preprocessor
 
   @impl true
-  def process(template_or_path, _content) do
+  def process(template_or_path, nil) do
     template_or_path
+  end
+
+  def process(_template_or_path, content) do
+    content
   end
 end
