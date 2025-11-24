@@ -241,7 +241,7 @@ defmodule SolidTest do
       assert errors == [
                %Solid.FileSystem.Error{
                  loc: %Solid.Parser.Loc{line: 1, column: 25},
-                 reason: "This solid context does not allow includes."
+                 reason: "This solid context does not allow includes filesystem not configured."
                }
              ]
     end

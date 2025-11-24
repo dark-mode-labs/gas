@@ -101,6 +101,7 @@ defmodule Solid.Filters.Filter.Numeric do
 
   defp to_decimal(input) when is_integer(input), do: Decimal.new(input)
   defp to_decimal(input) when is_float(input), do: Decimal.from_float(input)
+  defp to_decimal(%Decimal{} = input), do: input
   defp to_decimal(_), do: @zero
 
   defp decimal_to_float(value) do

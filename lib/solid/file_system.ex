@@ -35,8 +35,8 @@ defmodule Solid.BlankFileSystem do
   @behaviour Solid.FileSystem
 
   @impl true
-  def read_template_file(_template_path, _opts) do
-    {:error, %Solid.FileSystem.Error{reason: "This solid context does not allow includes."}}
+  def read_template_file(template_path, _opts) do
+    {:error, %Solid.FileSystem.Error{reason: "This solid context does not allow includes #{template_path}."}}
   end
 end
 
