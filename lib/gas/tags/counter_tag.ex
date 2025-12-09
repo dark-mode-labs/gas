@@ -1,4 +1,5 @@
 defmodule Gas.Tags.CounterTag do
+  @moduledoc false
   alias Gas.Argument
 
   @type t :: %__MODULE__{

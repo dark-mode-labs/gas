@@ -1,4 +1,7 @@
 defmodule Gas.BinaryCondition do
+  @moduledoc """
+  binary condition evaluator
+  """
   alias Gas.{Argument, Filter}
   alias Gas.Literal.Empty
 

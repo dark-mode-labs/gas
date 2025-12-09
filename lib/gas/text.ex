@@ -1,4 +1,5 @@
 defmodule Gas.Text do
+  @moduledoc false
   @enforce_keys [:loc, :text]
   defstruct [:loc, :text]
   @type t :: %__MODULE__{loc: Gas.Parser.Loc.t(), text: binary}

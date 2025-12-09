@@ -1,4 +1,7 @@
 defmodule Gas.Tags.InlineCommentTag do
+  @moduledoc """
+  inline comment tag
+  """
   alias Gas.ParserContext
 
   @enforce_keys [:loc]

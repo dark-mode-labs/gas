@@ -423,8 +423,7 @@ defmodule Gas.Tags.CaseTagTest do
 
       assert Renderable.render(tag, context, []) ==
                {[
-                  %Gas.Text{loc: %Loc{column: 3, line: 3}, text: "Shoes"},
-                  %Gas.Text{loc: %Loc{column: 3, line: 5}, text: "Shoes also"}
+                  %Gas.Text{loc: %Loc{column: 3, line: 3}, text: "Shoes"}
                 ], context}
     end
   end

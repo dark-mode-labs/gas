@@ -1,4 +1,5 @@
 defmodule Gas.UnaryCondition do
+  @moduledoc false
   defstruct [:loc, :child_condition, :argument, argument_filters: []]
 
   @type t :: %__MODULE__{

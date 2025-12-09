@@ -16,6 +16,9 @@ defmodule Gas do
           | Gas.TemplateError.t()
 
   defmodule Template do
+    @moduledoc """
+    Structure that holds the compiled AST of the parsed liquid
+    """
     @type t :: %__MODULE__{parsed_template: Parser.parse_tree()}
 
     @enforce_keys [:parsed_template]
@@ -31,15 +34,14 @@ defmodule Gas do
       message = "#{length(exception.errors)} error(s) found while rendering"
 
       errors =
-        exception.errors
-        |> Enum.map(&Exception.message/1)
-        |> Enum.join("\n")
+        Enum.map_join(exception.errors, "\n", &Exception.message/1)
 
       message <> "\n" <> errors
     end
   end
 
   defmodule ParserError do
+    @moduledoc false
     @type t :: %__MODULE__{
             reason: binary,
             meta: %{line: pos_integer, column: pos_integer},
@@ -55,14 +57,13 @@ defmodule Gas do
   end
 
   defmodule TemplateError do
+    @moduledoc false
     @type t :: %__MODULE__{errors: [ParserError.t()]}
     defexception [:errors]
 
     @impl true
     def message(exception) do
-      exception.errors
-      |> Enum.map(&Exception.message/1)
-      |> Enum.join("\n")
+      Enum.map_join(exception.errors, "\n", &Exception.message/1)
     end
   end
 
@@ -90,9 +91,10 @@ defmodule Gas do
   """
   @spec parse(binary, keyword) :: {:ok, Template.t()} | {:error, TemplateError.t()}
   def parse(text, opts \\ []) do
-    with {:ok, parse_tree} <- Parser.parse(text, opts) do
-      {:ok, %Template{parsed_template: parse_tree}}
-    else
+    case Parser.parse(text, opts) do
+      {:ok, parse_tree} ->
+        {:ok, %Template{parsed_template: parse_tree}}
+
       {:error, errors} ->
         lines = String.splitter(text, "\n")
 
@@ -158,7 +160,7 @@ defmodule Gas do
   @spec render(Parser.parse_tree(), Context.t(), keyword) :: {iolist, Context.t()}
   def render(template_or_text, values, options \\ [])
 
-  def render(%Template{parsed_template: parse_tree}, context = %Context{}, options) do
+  def render(%Template{parsed_template: parse_tree}, %Context{} = context, options) do
     matcher_module = Keyword.get(options, :matcher_module, Gas.Matcher)
     context = %{context | matcher_module: matcher_module}
 
@@ -177,7 +179,7 @@ defmodule Gas do
     render(template, context, options)
   end
 
-  def render(text, context = %Context{}, options) do
+  def render(text, %Context{} = context, options) do
     {result, context} =
       Enum.reduce(List.wrap(text), {[], context}, fn entry, {acc, context} ->
         try do
@@ -223,7 +225,7 @@ defmodule Gas do
     {variable_errors, filter_errors} =
       Enum.split_with(errors, &match?(%Gas.UndefinedVariableError{}, &1))
 
-    (options[:strict_variables] == true && Enum.count(variable_errors) > 0) ||
-      Enum.count(filter_errors) > 0
+    (options[:strict_variables] == true && variable_errors != []) ||
+      filter_errors != []
   end
 end

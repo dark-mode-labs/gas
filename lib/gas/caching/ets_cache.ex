@@ -1,4 +1,5 @@
 defmodule Gas.Caching.EtsCache do
+  @moduledoc false
   @behaviour Gas.Caching
 
   @cache :liquid_snippet_cache

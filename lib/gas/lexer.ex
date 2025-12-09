@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule Gas.Lexer do
   @moduledoc """
   Lexer module for Gas. It is responsible for tokenizing the input text inside an object or a tag.

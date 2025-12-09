@@ -1,4 +1,5 @@
 defmodule Gas.Tags.CycleTag do
+  @moduledoc false
   alias Gas.Argument
 
   @type t :: %__MODULE__{

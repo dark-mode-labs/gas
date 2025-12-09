@@ -1,4 +1,7 @@
 defmodule Gas.Tags.AssignTag do
+  @moduledoc """
+  assign tag
+  """
   alias Gas.{Argument, Parser, Object}
 
   @type t :: %__MODULE__{

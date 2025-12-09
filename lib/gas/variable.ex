@@ -1,4 +1,5 @@
 defmodule Gas.Variable do
+  @moduledoc false
   alias Gas.Parser.Loc
   alias Gas.{AccessLiteral, AccessVariable}
   alias Gas.Literal
@@ -23,17 +24,18 @@ defmodule Gas.Variable do
         do_parse_identifier(identifier, meta, rest)
 
       [{:open_square, meta} | _] ->
-        with {:ok, rest, accesses, accesses_original_name} <- access(tokens) do
-          original_name = Enum.join(accesses_original_name)
+        case access(tokens) do
+          {:ok, rest, accesses, accesses_original_name} ->
+            original_name = Enum.join(accesses_original_name)
 
-          {:ok,
-           %__MODULE__{
-             loc: struct!(Loc, meta),
-             identifier: nil,
-             accesses: accesses,
-             original_name: original_name
-           }, rest}
-        else
+            {:ok,
+             %__MODULE__{
+               loc: struct!(Loc, meta),
+               identifier: nil,
+               accesses: accesses,
+               original_name: original_name
+             }, rest}
+
           {:error, _, meta} ->
             {:error, "Argument expected", meta}
         end
@@ -72,38 +74,51 @@ defmodule Gas.Variable do
     end
   end
 
-  defp access(tokens, accesses \\ [], original_name \\ []) do
-    case tokens do
-      [{:open_square, _}, {:integer, meta, number}, {:close_square, _} | rest] ->
-        access = %AccessLiteral{loc: struct!(Loc, meta), value: number}
-        access(rest, [access | accesses], ["[#{number}]" | original_name])
+  defp access(tokens, accesses \\ [], original_name \\ [])
 
-      [{:open_square, _}, {:string, meta, string, quotes}, {:close_square, _} | rest] ->
-        access = %AccessLiteral{loc: struct!(Loc, meta), value: string}
-        quotes = IO.chardata_to_string([quotes])
-        access(rest, [access | accesses], ["[#{quotes}#{string}#{quotes}]" | original_name])
+  defp access(
+         [{:open_square, _}, {:integer, meta, number}, {:close_square, _} | rest],
+         accesses,
+         original_name
+       ) do
+    acc = %AccessLiteral{loc: struct!(Loc, meta), value: number}
+    access(rest, [acc | accesses], ["[#{number}]" | original_name])
+  end
 
-      [{:open_square, _}, {:identifier, meta, _identifier} | _] ->
-        with {:ok, variable, [{:close_square, _} | rest]} <- parse(tl(tokens)) do
-          access = %AccessVariable{loc: struct!(Loc, meta), variable: variable}
-          access(rest, [access | accesses], ["[#{variable.original_name}]" | original_name])
-        else
-          {:ok, _, rest} ->
-            {:error, "Argument access mal terminated", Gas.Parser.meta_head(rest)}
+  defp access(
+         [{:open_square, _}, {:string, meta, string, quotes}, {:close_square, _} | rest],
+         accesses,
+         original_name
+       ) do
+    acc = %AccessLiteral{loc: struct!(Loc, meta), value: string}
+    quotes = IO.chardata_to_string([quotes])
+    access(rest, [acc | accesses], ["[#{quotes}#{string}#{quotes}]" | original_name])
+  end
 
-          error ->
-            error
-        end
+  defp access([{:open_square, _}, {:identifier, meta, _} | _] = tokens, accesses, original_name) do
+    case parse(tl(tokens)) do
+      {:ok, variable, [{:close_square, _} | rest]} ->
+        acc = %AccessVariable{loc: struct!(Loc, meta), variable: variable}
+        access(rest, [acc | accesses], ["[#{variable.original_name}]" | original_name])
 
-      [{:dot, _}, {:identifier, meta, identifier} | rest] ->
-        access = %AccessLiteral{loc: struct!(Loc, meta), value: identifier}
-        access(rest, [access | accesses], [".#{identifier}" | original_name])
+      {:ok, _, rest} ->
+        {:error, "Argument access mal terminated", Gas.Parser.meta_head(rest)}
 
-      [{:open_square, meta} | _rest] ->
-        {:error, "Argument access expected", meta}
-
-      _ ->
-        {:ok, tokens, Enum.reverse(accesses), Enum.reverse(original_name)}
+      error ->
+        error
     end
+  end
+
+  defp access([{:dot, _}, {:identifier, meta, identifier} | rest], accesses, original_name) do
+    acc = %AccessLiteral{loc: struct!(Loc, meta), value: identifier}
+    access(rest, [acc | accesses], [".#{identifier}" | original_name])
+  end
+
+  defp access([{:open_square, meta} | _], _accesses, _original_name) do
+    {:error, "Argument access expected", meta}
+  end
+
+  defp access(tokens, accesses, original_name) do
+    {:ok, tokens, Enum.reverse(accesses), Enum.reverse(original_name)}
   end
 end

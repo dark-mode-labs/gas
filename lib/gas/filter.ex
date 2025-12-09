@@ -1,4 +1,5 @@
 defmodule Gas.Filter do
+  @moduledoc false
   @enforce_keys [:loc, :function, :positional_arguments, :named_arguments]
   defstruct [:loc, :function, :positional_arguments, :named_arguments]
 

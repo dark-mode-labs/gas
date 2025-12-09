@@ -1,4 +1,5 @@
 defmodule Gas.Argument do
+  @moduledoc false
   alias Gas.{
     Context,
     Filter,
@@ -52,48 +53,45 @@ defmodule Gas.Argument do
     end
   end
 
-  defp filters(tokens, filters \\ []) do
-    case tokens do
-      [{:pipe, _}, {:identifier, meta, filter} | rest] ->
-        case rest do
-          [{:colon, colon_meta} | rest] ->
-            case arguments(rest) do
-              {:ok, [], positional_arguments, _} when map_size(positional_arguments) == 0 ->
-                {:error, "Arguments expected", colon_meta}
+  defp filters(tokens, filters \\ [])
 
-              {:ok, positional_arguments, named_arguments, rest} ->
-                filter =
-                  %Filter{
-                    loc: struct!(Loc, meta),
-                    function: filter,
-                    positional_arguments: positional_arguments,
-                    named_arguments: named_arguments
-                  }
+  defp filters([{:pipe, _}, {:identifier, meta, filter}, {:colon, colon_meta} | rest], filters) do
+    case arguments(rest) do
+      {:ok, [], positional_arguments, _} when map_size(positional_arguments) == 0 ->
+        {:error, "Arguments expected", colon_meta}
 
-                filters(rest, [filter | filters])
+      {:ok, positional_arguments, named_arguments, rest} ->
+        filter = %Filter{
+          loc: struct!(Loc, meta),
+          function: filter,
+          positional_arguments: positional_arguments,
+          named_arguments: named_arguments
+        }
 
-              error ->
-                error
-            end
+        filters(rest, [filter | filters])
 
-          _ ->
-            filter =
-              %Filter{
-                loc: struct!(Loc, meta),
-                function: filter,
-                positional_arguments: [],
-                named_arguments: %{}
-              }
-
-            filters(rest, [filter | filters])
-        end
-
-      [{:pipe, meta} | _rest] ->
-        {:error, "Filter expected", meta}
-
-      _ ->
-        {:ok, Enum.reverse(filters), tokens}
+      error ->
+        error
     end
+  end
+
+  defp filters([{:pipe, _}, {:identifier, meta, filter} | rest], filters) do
+    filter = %Filter{
+      loc: struct!(Loc, meta),
+      function: filter,
+      positional_arguments: [],
+      named_arguments: %{}
+    }
+
+    filters(rest, [filter | filters])
+  end
+
+  defp filters([{:pipe, meta} | _], _filters) do
+    {:error, "Filter expected", meta}
+  end
+
+  defp filters(tokens, filters) do
+    {:ok, Enum.reverse(filters), tokens}
   end
 
   defp arguments(tokens, positional_arguments \\ [], named_arguments \\ %{})
@@ -106,41 +104,33 @@ defmodule Gas.Argument do
     {:ok, Enum.reverse(positional_arguments), named_arguments, tokens}
   end
 
-  defp arguments(tokens, positional_arguments, named_arguments) do
-    case tokens do
-      [{:identifier, _meta, variable_name}, {:colon, _} | rest] ->
-        case parse(rest) do
-          {:ok, argument, rest} ->
-            named_arguments = Map.put(named_arguments, variable_name, argument)
+  # named argument
+  defp arguments([{:identifier, _, key}, {:colon, _} | rest], positional, named) do
+    with {:ok, value, rest} <- parse(rest) do
+      case rest do
+        [{:comma, _} | rest] ->
+          arguments(rest, positional, Map.put(named, key, value))
 
-            case rest do
-              [{:comma, _} | rest] ->
-                arguments(rest, positional_arguments, named_arguments)
+        _ ->
+          {:ok, positional, Map.put(named, key, value), rest}
+      end
+    end
+  end
 
-              _ ->
-                {:ok, Enum.reverse(positional_arguments), named_arguments, rest}
-            end
+  # positional argument
+  defp arguments(tokens, positional, named) do
+    case parse(tokens) do
+      {:ok, value, rest} ->
+        case rest do
+          [{:comma, _} | rest] ->
+            arguments(rest, positional ++ [value], named)
 
-          error ->
-            error
+          _ ->
+            {:ok, positional ++ [value], named, rest}
         end
 
-      _rest ->
-        case parse(tokens) do
-          {:ok, argument, rest} ->
-            positional_arguments = [argument | positional_arguments]
-
-            case rest do
-              [{:comma, _} | rest] ->
-                arguments(rest, positional_arguments, named_arguments)
-
-              _ ->
-                {:ok, Enum.reverse(positional_arguments), named_arguments, rest}
-            end
-
-          error ->
-            error
-        end
+      error ->
+        error
     end
   end
 

@@ -1,4 +1,7 @@
 defmodule Gas.Context do
+  @moduledoc """
+  equivalent of assigns in phoenix, except that this context mutates on every fork in the branch and restores/accumulates partial renders that happen in the branches
+  """
   alias Gas.{AccessLiteral, AccessVariable, Argument, Literal, Variable}
 
   defstruct vars: %{},
@@ -83,9 +86,7 @@ defmodule Gas.Context do
   defp cycle_slug(%AccessVariable{variable: variable}), do: "av:#{variable}"
 
   defp cycle_slug(list) when is_list(list) do
-    list
-    |> Enum.map(&cycle_slug/1)
-    |> Enum.join(",")
+    Enum.map_join(list, ",", &cycle_slug/1)
   end
 
   @doc """

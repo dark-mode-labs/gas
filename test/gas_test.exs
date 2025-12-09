@@ -267,8 +267,6 @@ defmodule GasTest do
                  original_name: "var2",
                  loc: %Gas.Parser.Loc{line: 1, column: 16}
                },
-               # FIXME this should somehow point out which file?
-               # Check how liquid does this
                %Gas.UndefinedVariableError{
                  variable: ["var3"],
                  original_name: "var3",

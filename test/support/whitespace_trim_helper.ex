@@ -1,6 +1,7 @@
 defmodule WhitespaceTrimHelper do
+  @moduledoc false
   defmacro test_permutations(name, json \\ "{}", do: input) do
-    sanitized_name = name |> String.split() |> Enum.map(&String.capitalize/1) |> Enum.join()
+    sanitized_name = name |> String.split() |> Enum.map_join(&String.capitalize/1)
 
     module_name =
       Module.concat([Gas.Integration.WhitespaceTrimCase, :"#{sanitized_name}Test"])

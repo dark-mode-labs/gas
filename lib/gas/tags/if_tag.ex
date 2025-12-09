@@ -126,55 +126,73 @@ defmodule Gas.Tags.IfTag do
   defimpl Gas.Renderable do
     alias Gas.Tags.IfTag
 
-    def render(tag, context, options) do
-      eval_main_body!(tag, context, options)
+    # handle :if
+    def render(
+          %IfTag{
+            tag_name: :if,
+            condition: condition,
+            body: body,
+            elsifs: elsifs,
+            else_body: else_body
+          },
+          context,
+          options
+        ) do
+      case ConditionExpression.eval(condition, context, options) do
+        {:ok, true, context} ->
+          {body, context}
 
-      eval_elsifs!(tag.elsifs, context, options)
-
-      if tag.else_body do
-        {tag.else_body, context}
-      else
-        {[], context}
-      end
-    catch
-      {:result, result, context} -> {result, context}
-    end
-
-    defp eval_main_body!(%IfTag{tag_name: :if} = tag, context, options) do
-      case ConditionExpression.eval(tag.condition, context, options) do
-        {:ok, result, context} ->
-          if result, do: throw({:result, tag.body, context})
-
-        {:error, exception, context} ->
-          return_error(exception, context)
-      end
-    end
-
-    defp eval_main_body!(%IfTag{tag_name: :unless} = tag, context, options) do
-      case ConditionExpression.eval(tag.condition, context, options) do
-        {:ok, result, context} ->
-          if !result, do: throw({:result, tag.body, context})
+        {:ok, false, context} ->
+          eval_elsifs(elsifs, else_body, context, options)
 
         {:error, exception, context} ->
           return_error(exception, context)
       end
     end
 
-    defp eval_elsifs!(elsifs, context, options) do
-      Enum.each(elsifs, fn {condition, body} ->
+    # handle :unless
+    def render(
+          %IfTag{
+            tag_name: :unless,
+            condition: condition,
+            body: body,
+            elsifs: elsifs,
+            else_body: else_body
+          },
+          context,
+          options
+        ) do
+      case ConditionExpression.eval(condition, context, options) do
+        {:ok, false, context} ->
+          {body, context}
+
+        {:ok, true, context} ->
+          eval_elsifs(elsifs, else_body, context, options)
+
+        {:error, exception, context} ->
+          return_error(exception, context)
+      end
+    end
+
+    # evaluate elsifs and else
+    defp eval_elsifs(elsifs, else_body, context, options) do
+      Enum.reduce_while(elsifs, :continue, fn {condition, body}, _acc ->
         case ConditionExpression.eval(condition, context, options) do
-          {:ok, result, context} ->
-            if result, do: throw({:result, body, context})
-
-          {:error, exception, context} ->
-            return_error(exception, context)
+          {:ok, true, context} -> {:halt, {:ok, body, context}}
+          {:ok, false, _context} -> {:cont, :continue}
+          {:error, exception, context} -> {return_error(exception, context)}
         end
       end)
+      |> case do
+        {:ok, result, context} -> {result, context}
+        {:error, message, context} -> {message, context}
+        :continue -> {else_body || [], context}
+      end
     end
 
     defp return_error(exception, context) do
       context = Gas.Context.put_errors(context, exception)
-      throw({:result, Exception.message(exception), context})
+      {Exception.message(exception), context}
     end
   end
 end

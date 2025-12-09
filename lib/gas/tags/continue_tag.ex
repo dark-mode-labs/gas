@@ -1,4 +1,5 @@
 defmodule Gas.Tags.ContinueTag do
+  @moduledoc false
   @enforce_keys [:loc]
   defstruct [:loc]
 

@@ -1,4 +1,5 @@
 defmodule Gas.Tags.BreakTag do
+  @moduledoc false
   @enforce_keys [:loc]
   defstruct [:loc]
 

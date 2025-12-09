@@ -1,4 +1,5 @@
 defmodule Gas.Caching.NoCache do
+  @moduledoc false
   @behaviour Gas.Caching
 
   @impl true

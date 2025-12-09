@@ -1,4 +1,7 @@
 defmodule Gas.Tags.RenderTag do
+  @moduledoc """
+  renders the linked template supplied in args
+  """
   alias Gas.{Argument, Context, Parser}
   alias Gas.Parser.Loc
 
@@ -53,56 +56,60 @@ defmodule Gas.Tags.RenderTag do
     end
   end
 
-  defp parse_list_of_arguments(tokens, acc \\ %{}) do
-    case tokens do
-      [{:identifier, loc, _key} = first, {:dot, _} = dot | rest] ->
-        {identifier_collectors, others} =
-          Enum.split_while(rest, fn
-            {:identifier, _, _} -> true
-            {:dot, _} -> true
-            _ -> false
-          end)
+  defp parse_list_of_arguments(tokens, acc \\ %{})
 
-        if Enum.any?(identifier_collectors, fn
-             {:identifier, _, _key} -> false
-             {:dot, _} -> false
-             _ -> true
-           end) do
-          {:error, "Expected dotted identifier to have a colon assignment",
-           Gas.Parser.meta_head(rest)}
-        else
-          key =
-            Enum.map_join([first, dot | identifier_collectors], "", fn
-              {:identifier, _, key} -> key
-              {:dot, _} -> "."
-            end)
+  # dotted identifier case
+  defp parse_list_of_arguments(
+         [{:identifier, loc, _} = first, {:dot, _} = dot | rest],
+         acc
+       ) do
+    {idents, others} =
+      Enum.split_while(rest, fn
+        {:identifier, _, _} -> true
+        {:dot, _} -> true
+        _ -> false
+      end)
 
-          parse_list_of_arguments(
-            [{:identifier, loc, key} | others],
-            acc
-          )
-        end
+    if Enum.any?(idents, fn
+         {:identifier, _, _} -> false
+         {:dot, _} -> false
+         _ -> true
+       end) do
+      {:error, "Expected dotted identifier to have a colon assignment",
+       Gas.Parser.meta_head(rest)}
+    else
+      key =
+        Enum.map_join([first, dot | idents], "", fn
+          {:identifier, _, k} -> k
+          {:dot, _} -> "."
+        end)
 
-      [{:identifier, _, key}, {:colon, _} | rest] ->
-        with {:ok, value, rest} <- Argument.parse(rest) do
-          acc = Map.put(acc, key, value)
-
-          case rest do
-            [{:comma, _} | rest] ->
-              parse_list_of_arguments(rest, acc)
-
-            [{:end, _}] ->
-              {:ok, acc}
-
-            _ ->
-              {:error, "Expected arguments, 'with' or 'for'", Gas.Parser.meta_head(rest)}
-          end
-        end
-
-      _ ->
-        {:error, "Expected arguments, 'with' or 'for'", Gas.Parser.meta_head(tokens)}
+      parse_list_of_arguments([{:identifier, loc, key} | others], acc)
     end
   end
+
+  # identifier with colon assignment
+  defp parse_list_of_arguments([{:identifier, _, key}, {:colon, _} | rest], acc) do
+    with {:ok, value, rest} <- Argument.parse(rest) do
+      case rest do
+        [{:comma, _} | rest] ->
+          parse_list_of_arguments(rest, Map.put(acc, key, value))
+
+        [{:end, _}] ->
+          {:ok, Map.put(acc, key, value)}
+
+        _ ->
+          {:error, "Expected arguments, 'with' or 'for'", Gas.Parser.meta_head(rest)}
+      end
+    end
+  end
+
+  # finished or invalid
+  defp parse_list_of_arguments(tokens, _acc) do
+    {:error, "Expected arguments, 'with' or 'for'", Gas.Parser.meta_head(tokens)}
+  end
+
+  # entry point
 
   defp template(tokens) do
     case tokens do

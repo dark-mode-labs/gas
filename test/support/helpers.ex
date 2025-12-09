@@ -1,4 +1,5 @@
 defmodule Gas.Helpers do
+  @moduledoc false
   def render(text, hash \\ %{}, options \\ []) do
     case Gas.parse(text, options) do
       {:ok, template} ->

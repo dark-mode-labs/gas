@@ -1,4 +1,7 @@
 defmodule Gas.Tags.ForTag do
+  @moduledoc """
+  for loop
+  """
   alias Gas.{Argument, Parser, Variable}
 
   import Gas.NumberHelper, only: [to_integer: 1]
@@ -234,27 +237,22 @@ defmodule Gas.Tags.ForTag do
     end
 
     defp offset(tag, for_name, context, options) do
-      if argument = tag.parameters[:offset] do
-        if continue?(argument) do
-          {:ok, context.registers[for_name] || 0, context}
-        else
-          {:ok, offset, context} = Argument.get(argument, context, [], options)
+      case tag.parameters[:offset] do
+        nil ->
+          {:ok, 0, context}
 
-          case to_integer(offset) do
-            {:ok, offset} -> {:ok, offset, context}
+        %Variable{identifier: "continue", accesses: []} ->
+          {:ok, context.registers[for_name] || 0, context}
+
+        argument ->
+          with {:ok, offset, context} <- Argument.get(argument, context, [], options),
+               {:ok, offset} <- to_integer(offset) do
+            {:ok, offset, context}
+          else
             {:error, message} -> {:error, message, context}
           end
-        end
-      else
-        {:ok, 0, context}
       end
     end
-
-    defp continue?(%Variable{identifier: "continue", accesses: []}) do
-      true
-    end
-
-    defp continue?(_), do: false
 
     defp limit(enumerable, tag, context, options) do
       if argument = tag.parameters[:limit] do

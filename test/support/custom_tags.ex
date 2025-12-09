@@ -1,5 +1,7 @@
 defmodule CustomTags do
+  @moduledoc false
   defmodule CurrentLine do
+    @moduledoc false
     @enforce_keys [:loc]
     defstruct [:loc]
 
@@ -20,6 +22,7 @@ defmodule CustomTags do
   end
 
   defmodule CurrentYear do
+    @moduledoc false
     @enforce_keys [:loc]
     defstruct [:loc]
 
@@ -40,6 +43,7 @@ defmodule CustomTags do
   end
 
   defmodule CustomBrackedWrappedTag do
+    @moduledoc false
     alias Gas.Parser
 
     @enforce_keys [:loc, :body]

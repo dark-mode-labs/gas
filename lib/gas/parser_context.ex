@@ -1,4 +1,5 @@
 defmodule Gas.ParserContext do
+  @moduledoc false
   alias Gas.Lexer
 
   @type t :: %__MODULE__{

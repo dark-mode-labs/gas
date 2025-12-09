@@ -1,4 +1,7 @@
 defmodule Gas.Tags.CaptureTag do
+  @moduledoc """
+  capture tag
+  """
   alias Gas.{Argument, Parser}
 
   @type t :: %__MODULE__{

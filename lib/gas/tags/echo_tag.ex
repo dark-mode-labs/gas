@@ -1,4 +1,5 @@
 defmodule Gas.Tags.EchoTag do
+  @moduledoc false
   @enforce_keys [:loc, :object]
   defstruct [:loc, :object]
 

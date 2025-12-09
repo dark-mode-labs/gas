@@ -1,8 +1,10 @@
 defmodule Gas.Literal do
+  @moduledoc false
   alias Gas.Lexer
   alias Gas.Parser.Loc
 
   defmodule Empty do
+    @moduledoc false
     defstruct []
   end
 

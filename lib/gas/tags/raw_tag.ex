@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule Gas.Tags.RawTag do
   alias Gas.ParserContext
   @enforce_keys [:loc, :text]

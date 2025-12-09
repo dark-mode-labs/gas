@@ -1,4 +1,5 @@
 defmodule Gas.ConditionExpression do
+  @moduledoc false
   alias Gas.{Argument, BinaryCondition, Context, Lexer, UnaryCondition}
 
   @type condition :: BinaryCondition.t() | UnaryCondition.t()
@@ -82,7 +83,7 @@ defmodule Gas.ConditionExpression do
         end
 
       {:or, child_condition} ->
-        with {:ok, result, context} = eval(child_condition, context, options) do
+        with {:ok, result, context} <- eval(child_condition, context, options) do
           {:ok, left_side or result, context}
         end
 

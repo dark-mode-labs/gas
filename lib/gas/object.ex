@@ -1,4 +1,5 @@
 defmodule Gas.Object do
+  @moduledoc false
   @enforce_keys [:loc, :argument, :filters]
   defstruct [:loc, :argument, :filters]
   alias Gas.Parser.Loc
@@ -15,16 +16,17 @@ defmodule Gas.Object do
   end
 
   def parse(tokens) do
-    with {:ok, argument, filters, [{:end, _}] = rest} <- Argument.parse_with_filters(tokens) do
-      object =
-        %__MODULE__{
-          loc: struct!(Loc, Gas.Parser.meta_head(tokens)),
-          argument: argument,
-          filters: filters
-        }
+    case Argument.parse_with_filters(tokens) do
+      {:ok, argument, filters, [{:end, _}] = rest} ->
+        object =
+          %__MODULE__{
+            loc: struct!(Loc, Gas.Parser.meta_head(tokens)),
+            argument: argument,
+            filters: filters
+          }
 
-      {:ok, object, rest}
-    else
+        {:ok, object, rest}
+
       {:ok, _argument, _filters, rest} ->
         {:error, "Unexpected token", Gas.Parser.meta_head(rest)}
 

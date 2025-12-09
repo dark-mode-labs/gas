@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule Gas.Parser do
   @moduledoc """
   This module contains functions to parse Liquid templates

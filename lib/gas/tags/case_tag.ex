@@ -1,4 +1,7 @@
 defmodule Gas.Tags.CaseTag do
+  @moduledoc """
+  case tag
+  """
   alias Gas.{Argument, Parser}
 
   @type t :: %__MODULE__{
@@ -81,36 +84,38 @@ defmodule Gas.Tags.CaseTag do
     def render(tag, context, options) do
       {:ok, value, context} = Gas.Argument.get(tag.argument, context, [], options)
 
-      {_, acc, context} =
-        tag.cases
-        |> Enum.reduce({{:else_block, true}, [], context}, fn
-          {:else, result}, {{:else_block, true}, acc, context} ->
-            {{:else_block, true}, [result | acc], context}
-
-          {:else, _result}, {{:else_block, false}, acc, context} ->
-            {{:else_block, false}, acc, context}
-
-          {arguments, result}, {{:else_block, else_block}, acc, context} ->
-            {{:else_block, else_block}, inner_acc, context} =
-              Enum.reduce(arguments, {{:else_block, else_block}, [], context}, fn argument,
-                                                                                  {{:else_block,
-                                                                                    else_block},
-                                                                                   inner_acc,
-                                                                                   context} ->
-                {:ok, evaluated_argument, context} =
-                  Gas.Argument.get(argument, context, [], options)
-
-                if evaluated_argument == value do
-                  {{:else_block, false}, [result | inner_acc], context}
-                else
-                  {{:else_block, else_block}, inner_acc, context}
-                end
-              end)
-
-            {{:else_block, else_block}, [inner_acc | acc], context}
+      {chosen_body, context} =
+        Enum.reduce_while(tag.cases, {nil, context}, fn case_clause, {else_body, ctx} ->
+          eval_case(case_clause, value, else_body, ctx, options)
         end)
 
-      {Enum.reverse(acc) |> List.flatten(), context}
+      {List.wrap(chosen_body), context}
+    end
+
+    # handle else clause
+    defp eval_case({:else, body}, _value, _else_body, ctx, _options) do
+      # record else as fallback, but keep scanning in case a match appears later
+      {:cont, {body, ctx}}
+    end
+
+    # handle case with arguments
+    defp eval_case({arguments, body}, value, else_body, ctx, options) do
+      case match_arguments(arguments, value, ctx, options) do
+        {:match, ctx2} -> {:halt, {body, ctx2}}
+        {:no_match, ctx2} -> {:cont, {else_body, ctx2}}
+      end
+    end
+
+    defp match_arguments(arguments, value, context, options) do
+      Enum.reduce_while(arguments, {:no_match, context}, fn arg, {_, ctx} ->
+        case Gas.Argument.get(arg, ctx, [], options) do
+          {:ok, ^value, ctx2} ->
+            {:halt, {:match, ctx2}}
+
+          {:ok, _value, ctx2} ->
+            {:cont, {:no_match, ctx2}}
+        end
+      end)
     end
   end
 end

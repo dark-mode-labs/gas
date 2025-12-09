@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule Gas.Tags.NoOpTag do
   @enforce_keys [:loc]
   defstruct [:loc]

@@ -1,4 +1,7 @@
 defmodule Gas.Tag do
+  @moduledoc """
+  manage all registered tags
+  """
   alias Gas.{Lexer, ParserContext, Renderable, Tags}
   alias Gas.Parser.Loc
 

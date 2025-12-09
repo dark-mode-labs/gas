@@ -629,27 +629,29 @@ defmodule Gas.Filters.Filter.Color do
   defp hex_to_i(h), do: String.to_integer(h, 16)
 
   # RGB <-> HSL
+  defp rgb_to_hsl(r, g, b) when r == g and g == b do
+    l = r / 255 * 100
+    {0.0, 0.0, l}
+  end
+
   defp rgb_to_hsl(r, g, b) do
-    [r, g, b] = Enum.map([r, g, b], &(&1 / 255))
-    max = Enum.max([r, g, b])
-    min = Enum.min([r, g, b])
+    r = r / 255
+    g = g / 255
+    b = b / 255
+    max = max(r, max(g, b))
+    min = min(r, min(g, b))
     l = (max + min) / 2
+    d = max - min
+    s = if l > 0.5, do: d / (2 - max - min), else: d / (max + min)
 
-    if max == min do
-      {0, 0, l * 100}
-    else
-      d = max - min
-      s = if l > 0.5, do: d / (2 - max - min), else: d / (max + min)
+    h =
+      cond do
+        max == r -> (g - b) / d + if g < b, do: 6, else: 0
+        max == g -> (b - r) / d + 2
+        max == b -> (r - g) / d + 4
+      end
 
-      h =
-        cond do
-          max == r -> (g - b) / d + if g < b, do: 6, else: 0
-          max == g -> (b - r) / d + 2
-          max == b -> (r - g) / d + 4
-        end
-
-      {h * 60, s * 100, l * 100}
-    end
+    {h * 60, s * 100, l * 100}
   end
 
   defp hsl_to_rgb(h, s, l) do
@@ -844,40 +846,40 @@ defmodule Gas.Filters.Filter.HTML do
     opts =
       cond do
         is_map(opts) -> opts
-        is_list(opts) and Keyword.keyword?(opts) -> Enum.into(opts, %{})
+        Keyword.keyword?(opts) -> Map.new(opts)
         true -> %{}
       end
 
-    font_display = Map.get(opts, "font_display") || Map.get(opts, :font_display, "swap")
+    font_display = Map.get(opts, :font_display, Map.get(opts, "font_display", "swap"))
 
     font_list =
       cond do
         is_list(fonts) -> fonts
         is_map(fonts) -> [fonts]
-        is_binary(fonts) -> [%{"family" => fonts}]
+        is_binary(fonts) -> [%{family: fonts}]
         true -> []
       end
 
-    font_list
-    |> Enum.map_join("\n", fn font ->
-      font_map = if is_map(font), do: font, else: %{}
-      fam = Map.get(font_map, "family") || Map.get(font_map, :family) || "Unnamed"
-      src = Map.get(font_map, "src") || Map.get(font_map, :src) || "/fonts/#{fam}.woff2"
-      fmt = Map.get(font_map, "format") || Map.get(font_map, :format) || "woff2"
-      weight = Map.get(font_map, "weight") || Map.get(font_map, :weight, "400")
-      style = Map.get(font_map, "style") || Map.get(font_map, :style, "normal")
+    Enum.map_join(font_list, "\n", &font_face_block(&1, font_display))
+  end
 
-      """
-      @font-face {
-        font-family: '#{fam}';
-        src: url('#{src}') format('#{fmt}');
-        font-weight: #{weight};
-        font-style: #{style};
-        font-display: #{font_display};
-      }
-      """
-      |> String.trim()
-    end)
+  defp font_face_block(font, font_display) do
+    fam = Map.get(font, :family, Map.get(font, "family", "Unnamed"))
+    src = Map.get(font, :src, Map.get(font, "src", "/fonts/#{fam}.woff2"))
+    fmt = Map.get(font, :format, Map.get(font, "format", "woff2"))
+    weight = Map.get(font, :weight, Map.get(font, "weight", "400"))
+    style = Map.get(font, :style, Map.get(font, "style", "normal"))
+
+    """
+    @font-face {
+      font-family: '#{fam}';
+      src: url('#{src}') format('#{fmt}');
+      font-weight: #{weight};
+      font-style: #{style};
+      font-display: #{font_display};
+    }
+    """
+    |> String.trim()
   end
 
   defp escape_attr(v) when is_binary(v), do: v
