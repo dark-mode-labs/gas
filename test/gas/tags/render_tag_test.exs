@@ -92,8 +92,7 @@ defmodule Gas.Tags.RenderTagTest do
                   "key" => %Gas.Variable{identifier: "value"},
                   "title" => %Gas.Literal{value: "text"}
                 }
-              },
-              %Gas.ParserContext{rest: "", line: 1, column: 54, mode: :normal, tags: nil}} =
+              }, %Gas.ParserContext{rest: "", line: 1, column: 54, mode: :normal, tags: nil}} =
                parse(template)
     end
 

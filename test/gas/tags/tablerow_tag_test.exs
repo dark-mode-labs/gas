@@ -99,8 +99,7 @@ defmodule Gas.Tags.TablerowTagTest do
                     },
                     %Gas.Text{loc: %Loc{line: 2, column: 10}, text: "\n"}
                   ]
-                },
-                %Gas.ParserContext{rest: "\n", line: 3, column: 18, mode: :normal, tags: nil}}
+                }, %Gas.ParserContext{rest: "\n", line: 3, column: 18, mode: :normal, tags: nil}}
     end
 
     test "params" do

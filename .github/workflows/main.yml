@@ -24,6 +24,9 @@ jobs:
       - name: Run "mix format"
         run: mix format --check-formatted
 
+      - name: Run Credo (Static Analysis)
+        run: mix credo
+
   test:
     name: Test (Elixir ${{matrix.elixir}} | Erlang/OTP ${{matrix.otp}})
     runs-on: ubuntu-latest

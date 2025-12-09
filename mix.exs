@@ -28,6 +28,7 @@ defmodule Gas.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:decimal, "~> 2.0"},
       {:date_time_parser, "~> 1.2"},
       {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
