@@ -3,12 +3,12 @@ defmodule WhitespaceTrimHelper do
     sanitized_name = name |> String.split() |> Enum.map(&String.capitalize/1) |> Enum.join()
 
     module_name =
-      Module.concat([Solid.Integration.WhitespaceTrimCase, :"#{sanitized_name}Test"])
+      Module.concat([Gas.Integration.WhitespaceTrimCase, :"#{sanitized_name}Test"])
 
     quote do
       defmodule unquote(module_name) do
         use ExUnit.Case, async: true
-        import Solid.Helpers
+        import Gas.Helpers
         import WhitespaceTrimHelper
         @moduletag :integration
 

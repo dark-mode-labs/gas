@@ -1,4 +1,4 @@
-defmodule Solid.CustomFilters do
+defmodule Gas.CustomFilters do
   def date_year(input) do
     date = Date.from_iso8601!(input)
     date.year

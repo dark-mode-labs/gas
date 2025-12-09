@@ -1,0 +1,514 @@
+compact
+
+{{words | compact | join}}
+{{ '123' | compact | first }}
+
+{ "hashes" : [{ "a" : "A" }, { "a" : null }, { "a" : "C "}] }
+
+{{ array[1] | upcase }}
+
+abs
+
+{{ -17 | abs }}
+{{ 4 | abs }}
+{{ "-19.86" | abs }}
+{{ "-5" | abs }}
+{{ -3 | abs: 1 }}
+{{ var_empty_hash | abs }}
+
+append
+
+{{ "apples, oranges, and bananas" | append: "Some fruit: " }}
+{{ "apples, oranges, and bananas" | append: unknown }}
+{{ "apples, oranges, and bananas" | append: empty }}
+{{ empty | append: "text" }}
+{{ unknown | append: "Some text" }}
+
+capitalize
+
+{{ "my great title" | capitalize }}
+{{ 1 | capitalize }}
+{{ empty | capitalize }}
+{{ unknown | capitalize }}
+
+upcase
+
+{{ "my great title" | upcase }}
+{{ 1 | upcase }}
+{{ empty | upcase }}
+{{ unknown | upcase }}
+
+downcase
+
+{{ "My Great title" | downcase }}
+{{ 1 | downcase }}
+{{ empty | downcase }}
+{{ unknown | downcase }}
+
+ceil
+
+{{ 1.2 | ceil }}
+{{ 2.0 | ceil }}
+{{ 2 | ceil }}
+{{ 183.357 | ceil }}
+{{ "3.5" | ceil }}
+{{ 1 | ceil }}
+{{ "123" | ceil }}
+{{ "hello" | ceil }}
+{{ var_empty_hash | ceil }}
+{{ does_not_exist | ceil }}
+
+divided_by
+
+{{ 16 | divided_by: 4}}
+{{ 5 | divided_by: 3 }}
+{{ 20 | divided_by: 7 }}
+{{ 20 | divided_by: 7.0 }}
+{{ 20 | divided_by: '7.0' }}
+{{ '20' | divided_by: 7.0 }}
+{{ 'foo' | divided_by: 20 }}
+{{ 9.0 | divided_by: 2 }}
+
+first
+
+{{ my_array | first }}
+{{ string | first }}
+{{ does_not_exist | first }}
+{{ post | first | join: ","}}
+{{ (1..5) | first }}
+
+last
+
+{{ my_array | last }}
+{{ string | last }}
+{{ does_not_exist | last }}
+{{ (1..3) | last }}
+
+floor
+
+{{ 1.2 | floor }}
+{{ 2.0 | floor }}
+{{ 183.357 | floor }}
+{{ "3.5" | floor }}
+{{ 1 | floor }}
+{{ "123" | floor }}
+{{ "not a number" | floor }}
+
+lstrip
+
+{{ "          So much room for activities!          " | rstrip }}
+{{ 5 | lstrip }}
+{{ unknown | lstrip }}
+{% #{{ posts | lstrip }} %}
+
+rstrip
+
+{{ "          So much room for activities!          " | rstrip }}
+{{ 5 | rstrip }}
+{{ unknown | rstrip }}
+{% # {{ posts | rstrip }} %}
+
+strip
+
+{{ "          So much room for activities!          " | strip }}
+{{ 5 | strip }}
+{{ unknown | strip }}
+{% # {{ posts | strip }} %}
+
+minus
+
+{{ 4 | minus: 2 }}
+{{ 16 | minus: 4 }}
+{{ 183.357 | minus: 12 }}
+{{ 13 | minus: "12" }}
+{{ 10 | minus: unknown }}
+{{ '10' | minus: 3 }}
+{{ '10ABC' | minus: 3 }}
+{{ '10ABC' | minus: '3ABC' }}
+{{ '10.0ABC' | minus: '3.0ABC' }}
+{{ 10.0 | minus: '3.0ABC' }}
+{{ '10.0ABC' | minus: 3.0 }}
+{{ "not a number" | minus: "2.0" }}
+{{ "2.0" | minus: "not a number" }}
+{{ '10' | minus: '2' }}
+
+plus
+
+{{ 1 | plus: 2 }}
+{{ '1' | plus: '2' }}
+{{ '1ABC' | plus: '2ABC' }}
+{{ 0.1 | plus: 0.2 }}
+{{ "0.1" | plus: "0.2" }}
+{{ "0.1ABC" | plus: "0.2" }}
+{{ "0.1" | plus: "0.2ABC" }}
+{{ "0.1ABC" | plus: "0.2ABc" }}
+{{ 1.1 | plus: 2 }}
+{{ 1 | plus: 2.1 }}
+{{ 0.1 | plus: 0.2 }}
+{{ 1.00 | plus: 2.00 }}
+{{ 1.0 | plus: 2.1 }}
+{{ 1.9 | plus: 2.1 }}
+{{ 2.8571428571428571212121 | plus: 2.857142857142857 }}
+
+sum
+
+{{ 1 | sum }}
+{{ 1.0 | sum }}
+{{ "text" | sum }}
+{{ my_array | sum }}
+{{ numbers | sum }}
+{{ my_numbers | sum }}
+{{ my_floats | sum }}
+{{ post | sum: 'key' }}
+{{ empty | sum: 'key' }}
+{{ true | sum: 'key' }}
+{{ false | sum: 'key' }}
+{{ nil | sum: 'key' }}
+{{ blank | sum: 'key' }}
+{{ numbers | sum: 'key' }}
+{{ numbers | sum: '2' }}
+{{ numbers | sum:  unknown }}
+{{ uknown | sum }}
+{{ array | sum }}
+{{ words | sum }}
+
+round
+
+{{ 1.2 | round }}
+{{ 2.7 | round }}
+{{ 183.357 | round: 2 }}
+{{ 183.010 | round: 3 }}
+{{ '183.357' | round: 2 }}
+{{ '183.0' | round: 2 }}
+{{ '183.000' | round: 2 }}
+{{ '183.010' | round: 3 }}
+{{ '183' | round: 2 }}
+{{ '183' | round }}
+{{ '183ABC' | round }}
+{{ '183.123ABC' | round }}
+{{ "5.6" | round }}
+{{ 5.666 | round: 1.2 }}
+{{ 183.357 | round: '2' }}
+{{ 183 | round: '2' }}
+{{ '183.357' | round: '2' }}
+{{ 10 | round }}
+{{ 10 | round: 2 }}
+{{ unknown | round: 2 }}
+
+times
+
+{{ 3 | times: 2 }}
+{{ 24 | times: 7 }}
+{{ 183.357 | times: 12 }}
+{{ 12 | times: 183.357 }}
+{{ 1.357 | times: 1.357 }}
+{{ '183.357' | times: 12 }}
+{{ 183.357 | times: '12' }}
+
+prepend
+
+{{ "apples, oranges, and bananas" | prepend: "Some fruit: " }}
+{{ "apples, oranges, and bananas" | prepend: unknown }}
+{{ "apples, oranges, and bananas" | prepend: empty }}
+{% comment %}{{ "apples, oranges, and bananas" | prepend: post }} {% endcomment %}
+{{ empty | prepend: "text" }}
+{{ unknown | prepend: "Some text" }}
+{{ 1 | prepend: 5 }}
+
+replace
+
+{{ "I strained to see the train through the rain" | replace: "rain", "rap" }}
+{{ "I strained to see the train through the rain" | replace: nil, nil }}
+{{ "654321" | replace: 5, "five" }}
+{{ 654321 | replace: 5, "five" }}
+{{ "654321" | replace: empty, "empty" }}
+{{ unknown | replace: "rain", "unknown" }}
+{% # {{ post | replace: 'T', 't' | join: '#' }} %}
+
+remove
+
+{{ "I strained to see the train through the rain" | remove: "rain" }}
+{{ "I strained to see the train through the rain" | remove: nil }}
+{{ "654321" | remove: 5 }}
+{{ 654321 | remove: 5 }}
+{{ "654321" | remove: empty }}
+{{ unknown | remove: "rain" }}
+
+remove_first
+
+{{ "I strained to see the train through the rain" | remove_first: "rain" }}
+{{ "I strained to see the train through the rain" | remove_first: nil }}
+{{ "654321" | remove_first: 5 }}
+{{ 654321 | remove_first: 5 }}
+{{ "654321" | remove_first: empty }}
+{{ unknown | remove_first: "rain" }}
+
+{% assign my_string = "Take my protein pills and put my helmet on" %}
+{{ my_string | replace: "my", "your" }}
+{{ my_string | replace_first: "my", "your" }}
+
+replace_first
+
+{{ "Take my protein" | replace_first: nosuchthing, "#" }}
+
+split
+
+{{ '' | split: "" | join: '#'}}
+{{ '' | split: "," | join: '#'}}
+{{ ' a bc ' | split: "" | join: '#'}}
+{{ ' a bc ' | split: " " | join: '#'}}
+{{ fruits | split: ", " | reverse | join: ", " }}
+{{ fruits | split: "," |  size }}
+{{ "Ground control to Major Tom." | size }}
+{{ fruits | split: ", " | sort | join: ", " }}
+{{ fruits | split: ", " | sort_natural | join: ", " }}
+{{ unknown | split: ", " | sort_natural | join: ", " }}
+{{ empty | split: ", " | sort_natural | join: ", " }}
+{% comment %}{{ post | split: ", " | sort_natural | join: ", " }}{%endcomment %}
+
+size
+
+{{ words | size }}
+{{ 'abc' | size }}
+{{ "José" | size }}
+{{ 1.0 | size }}
+{{ posts |  size }}
+{{ unknown | size }}
+{{ empty | size }}
+{{ blank | size }}
+{{ true | size }}
+{{ false | size }}
+{{ (1..5) | size }}
+
+slice
+
+{{ "Liquid" | slice: 0 }}
+{{ "Liquid" | slice: 2 }}
+{{ "Liquid" | slice: -2 }}
+{{ "Liquid" | slice: -2, 99 }}
+{{ "Liquid" | slice: 2, 5 }}
+{{ "Liquid" | slice: -3, 2 }}
+{{ "Liquid" | slice: -2, -1 }}
+
+{{ "Liquid" | slice: "2" }}
+{{ "Liquid" | slice: "-2" }}
+{{ "Liquid" | slice: "2", "5" }}
+
+{{ unknown | slice: 1, 2 | join: "," }}
+{{ 1000 | slice: 1, 2 | join: "," }}
+{{ empty | slice: 1, 2 | join: "," }}
+{{ blank | slice: 1, 2 | join: "," }}
+{{ true | slice: 1, 2 | join: "," }}
+{{ false | slice: 1, 2 | join: "," }}
+
+truncate
+
+{{ "Ground control to Major Tom. Ground control to Major Tom." | truncate }}
+{{ "Ground control to Major Tom." | truncate: 20 }}
+{{ "Ground control to Major Tom." | truncate: 0 }}
+{{ "Ground control to Major Tom." | truncate: 25, ", and so on" }}
+{{ "Ground control to Major Tom." | truncate: 20, "" }}
+{{ "Ground control to Major Tom." | truncate: 20, unknown }}
+{{ "Ground control to Major Tom." | truncate: 20, "text" }}
+{{ "Ground control to Major Tom." | truncate: 20, 100.0 }}
+{{ "Ground control to Major Tom." | truncate: "20", "..." }}
+{{ "Ground control to Major Tom." | truncate: "20", blank }}
+{{ 1000 | truncate: 20 }}
+{{ 1000.0 | truncate: 20 }}
+{{ blank | truncate: 20 }}
+{{ empty | truncate: 20 }}
+{{ true | truncate: 20 }}
+{{ false | truncate: 20 }}
+
+truncatewords
+
+{{ "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20" | truncatewords }}
+{{ "1   2     3 4     5" | truncatewords: 2 }}
+{{ "Ground control to Major Tom." | truncatewords: 3 }}
+{{ "Ground control to Major Tom." | truncatewords: 0 }}
+{{ "Ground control to Major Tom." | truncatewords: 3, "--" }}
+{{ "Ground control to Major Tom." | truncatewords: 3, "" }}
+{{ "Ground control to Major Tom." | truncatewords: 10 }}
+{{ "Ground control to Major Tom." | truncatewords: 10, blank }}
+{{ "Ground control to
+Major Tom" | truncatewords: 3 }}
+{{ empty_string | truncatewords: 3, "" }}
+{{ 100 | truncatewords: 3, "-" }}
+{{ 1000.0 | truncatewords: 3, "-" }}
+{{ blank | truncatewords: 3, "-" }}
+{{ empty | truncatewords: 3, "-" }}
+{{ true | truncatewords: 3, "-" }}
+{{ false | truncatewords: 3, "-" }}
+
+uniq
+{{ unknown | uniq | join: '-' }}
+{{ true | uniq | join: '-' }}
+{{ false | uniq | join: '-' }}
+{{ my_array | uniq | join: '-' }}
+{{ array | uniq | join: '-' }}
+{{ (1..5) | uniq | join: '-' }}
+{{ fruits | split: ","| uniq | join: ", " }}
+
+date
+
+{{ "2000-01-01 00:00:00Z" | date: "%a, %b %d, %y" }}
+{{ 946684800 | date: "%Y" }}
+{{ "now" | date: "%Y-%m-%d %H:%M" }}
+{{ "invalid-date" | date: "%Y" }}
+
+modulo
+
+{{ 183.357 | modulo: 12 }}
+{{ 183.35 | modulo: 12 }}
+{{ 183.3 | modulo: 12 }}
+{{ 183 | modulo: 12 }}
+{{ 183 | modulo: 12.5 }}
+{{ 183.5 | modulo: 12.1 }}
+{{ "183.5" | modulo: "12.1" }}
+{{ "183" | modulo: "12" }}
+{{ "text" | modulo: "2.0" }}
+{{ unknown | modulo: 12 }}
+{{ blank | modulo: 2 }}
+{{ true | modulo: 2 }}
+{{ false | modulo: 2 }}
+{{ empty | modulo: 2 }}
+{{ (0..5) | modulo: 2 }}
+
+base64
+
+{{ "one two three" | base64_encode }}
+{{ 1 | base64_encode }}
+
+{{ "b25lIHR3byB0aHJlZQ==" | base64_decode }}
+{{ unknown | base64_decode }}
+{{ "" | base64_decode }}
+
+{{ "https://github.com/dark-mode-labs/gas" | base64_url_safe_encode }}
+{{ 1 | base64_url_safe_encode }}
+
+{{ "aHR0cHM6Ly9naXRodWIuY29tL2VkZ3VyZ2VsL3NvbGlk" | base64_url_safe_decode }}
+{{ unknown | base64_url_safe_decode }}
+{{ "" | base64_url_safe_decode }}
+
+{{ my_string | remove_last: "cde" }}
+{{ my_string | replace_last: "cde", "fgh" }}
+{{ "hello" | replace_last: "ll", "abc" }}
+{{ "hello" | replace_last: "l", "p" }}
+{{ "abab" | replace_last: "a", "c" }}
+{{ "Take my protein" | replace_last: nosuchthing, "#" }}
+
+default
+
+{{ var_nil | default: "nil" }}
+{{ var_false | default: "false" }}
+{{ var_empty_hash | default: "text" }}
+{{ var_empty_array | default: "empty array" }}
+{{ var_empty_string | default: "empty string" }}
+{{ false | default: 'baar', allow_false: true }}
+{{ false | default }}
+{% # {{ false | default: allow_false: true }} %}
+{{ empty | default: bar }}
+
+at_least
+
+{{ 3 | at_least: 1 }}
+{{ 3.0 | at_least: 1.0 }}
+{{ 3 | at_least: 1.0 }}
+{{ 3.0 | at_least: 1 }}
+{{ 1 | at_least: 3 }}
+{{ 1.0 | at_least: 3.0 }}
+{{ 1 | at_least: 3.0 }}
+{{ 1.0 | at_least: 3 }}
+{{ 3 | at_least: unknown }}
+{{ unknown | at_least: 3  }}
+
+at_most
+
+{{ 3 | at_most: 1 }}
+{{ 3.0 | at_most: 1.0 }}
+{{ 3 | at_most: 1.0 }}
+{{ 3.0 | at_most: 1 }}
+{{ 1 | at_most: 3 }}
+{{ 1.0 | at_most: 3.0 }}
+{{ 1 | at_most: 3.0 }}
+{{ 1.0 | at_most: 3 }}
+{{ 3 | at_most: unknown }}
+{{ unknown | at_most: 3  }}
+
+concat
+
+{{ words | concat: array | join: '#' }}
+{{ string | concat: array | join: '#' }}
+{{ nested_array | concat: array | join: '#' }}
+{{ unknown | concat: array | join: '#' }}
+{{ (1..5) | concat: my_array | join: '#' }}
+
+join
+
+{{ array | join: 5 }}
+{{ array | join: unknown }}
+{{ 123 | join: '#' }}
+{{ (1..5) | join: '#' }}
+{{ (5..1) | join: '#' }}
+{{ (1..'text') | join: '#' }}
+{{ nested_array | join: '-' }}
+
+map
+
+{{ posts | map: 'title' | join: ', ' }}
+{{ post | map: 'title' | join: ', ' }}
+{{ 'not a list' | map: 'title' | join: ', ' }}
+
+where
+
+{{ float | where: 'title' }}
+{{ string | where: 'title' }}
+{{ unknown | where: 'title' }}
+{{ true | where: 'title' }}
+{{ false | where: 'title' }}
+{{ posts | where: 'title', 'Title 3' | map: 'title' }}
+
+newline_to_br
+
+{{ "1
+2
+3" | newline_to_br }}
+
+{{ "" | newline_to_br }}
+{{ blank | newline_to_br }}
+{{ empty | newline_to_br }}
+{{ true | newline_to_br | default: "true" }}
+{{ false | newline_to_br | default: "false" }}
+
+reverse
+
+{{ nested_array | reverse | join: '#' }}
+{{ words | reverse | join: '#' }}
+{{ my_numbers | reverse | join: '#' }}
+{{ true | reverse | join: '#' }}
+{{ false | reverse | join: '#' }}
+{{ 1 | reverse | join: '#' }}
+{{ "text" | reverse | join: '#' }}
+{{ unknown | reverse | join: '#' }}
+
+sort
+
+{{ array | sort | join: '#' }}
+{{ array | reverse | sort | join: '#' }}
+{{ 1 | sort | join: '#' }}
+{{ 1.0 | sort | join: '#' }}
+{{ true | sort | join: '#' }}
+{{ false | sort | join: '#' }}
+{{ unknown | sort | join: '#' }}
+{% # {{ posts | sort | join: '#' }} %}
+
+sort_natural
+
+{{ 123 | sort_natural }}
+{{ (0..15) | sort_natural | join: ", " }}
+{{ 123 | sort_natural | join: ", " }}
+{{ fruits | sort_natural | join: ", " }}
+
+strip_html
+
+{{ "<!-- foo bar \\n test -->test" | strip_html }}
