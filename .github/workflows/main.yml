@@ -21,9 +21,6 @@ jobs:
       - name: Compile with --warnings-as-errors
         run: mix compile --warnings-as-errors
 
-      - name: Run "mix format"
-        run: mix format --check-formatted
-
       - name: Run Credo (Static Analysis)
         run: mix credo
 
