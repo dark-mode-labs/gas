@@ -8,7 +8,7 @@ defmodule Gas.MixProject do
     [
       app: :gas,
       version: @version,
-      elixir: "~> 1.17",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       consolidate_protocols: Mix.env() != :test,
       start_permanent: Mix.env() == :prod,
