@@ -1,18 +1,18 @@
-defmodule Solid.MixProject do
+defmodule Gas.MixProject do
   use Mix.Project
 
-  @source_url "https://github.com/edgurgel/solid"
-  @version "1.1.1"
+  @source_url "https://github.com/dark-mode-labs/gas"
+  @version "1.0.0"
 
   def project do
     [
-      app: :solid,
+      app: :gas,
       version: @version,
-      elixir: "~> 1.17",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       consolidate_protocols: Mix.env() != :test,
       start_permanent: Mix.env() == :prod,
-      name: "solid",
+      name: "gas",
       package: package(),
       docs: docs(),
       deps: deps()
@@ -28,18 +28,18 @@ defmodule Solid.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:decimal, "~> 2.0"},
       {:date_time_parser, "~> 1.2"},
       {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
-      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
-      {:jason, "~> 1.0", only: :test}
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
 
   defp package do
     [
       description: "Liquid Template engine",
-      maintainers: ["Eduardo Gurgel Pinho"],
+      maintainers: ["Praveen Rangarajan"],
       licenses: ["MIT"],
       links: %{"Github" => @source_url}
     ]

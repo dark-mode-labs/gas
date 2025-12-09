@@ -1,9 +1,10 @@
-defmodule Solid.Helpers do
+defmodule Gas.Helpers do
+  @moduledoc false
   def render(text, hash \\ %{}, options \\ []) do
-    case Solid.parse(text, options) do
+    case Gas.parse(text, options) do
       {:ok, template} ->
         template
-        |> Solid.render(hash, options)
+        |> Gas.render(hash, options)
         |> case do
           {:error, errors, result} -> {:error, errors, to_string(result)}
           {:ok, result, _errors} -> to_string(result)
@@ -19,10 +20,10 @@ defmodule Solid.Helpers do
   end
 
   def integration_render(text, hash \\ %{}, options \\ []) do
-    case Solid.parse(text, options) do
+    case Gas.parse(text, options) do
       {:ok, template} ->
         template
-        |> Solid.render(hash, options)
+        |> Gas.render(hash, options)
         |> case do
           # Print whatever we got as result discarding errors
           {:error, _errors, result} -> to_string(result)
@@ -50,20 +51,20 @@ defmodule Solid.Helpers do
     quote location: :keep do
       opts =
         if unquote(template_dir) do
-          file_system = Solid.LocalFileSystem.new(unquote(template_dir))
-          [{:file_system, {Solid.LocalFileSystem, file_system}} | unquote(opts)]
+          file_system = Gas.LocalFileSystem.new(unquote(template_dir))
+          [{:file_system, {Gas.LocalFileSystem, file_system}} | unquote(opts)]
         else
           unquote(opts)
         end
 
-      solid_output =
-        integration_render(unquote(liquid_input), Jason.decode!(unquote(json_input)), opts)
+      gas_output =
+        integration_render(unquote(liquid_input), JSON.decode!(unquote(json_input)), opts)
         |> IO.iodata_to_binary()
 
       {liquid_output, 0} =
         liquid_render(unquote(liquid_input), unquote(json_input), unquote(template_dir))
 
-      if liquid_output == solid_output do
+      if liquid_output == gas_output do
         true
       else
         message = """
@@ -74,13 +75,13 @@ defmodule Solid.Helpers do
 
         expr =
           quote do
-            liquid_output == solid_output
+            liquid_output == gas_output
           end
 
         raise ExUnit.AssertionError,
           expr: expr,
           left: liquid_output,
-          right: solid_output,
+          right: gas_output,
           message: message
       end
     end
