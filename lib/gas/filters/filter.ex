@@ -599,7 +599,7 @@ defmodule Gas.Filters.Filter.Color do
       rest
       |> String.trim_trailing(")")
       |> String.split(",")
-      |> Enum.map(&String.trim/1)
+      |> Enum.map(fn chunk -> chunk |> String.trim() |> to_number() end)
 
     {:ok, {r, g, b, a}}
   end
