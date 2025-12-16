@@ -702,14 +702,26 @@ end
 defmodule Gas.Filters.Filter.Asset do
   @moduledoc "Asset/media helpers"
 
+  @uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
   require Logger
 
   def image_url(invalid_link, _opts) when invalid_link in [nil, "", [""]], do: nil
 
   def image_url(asset, opts) do
-    case URI.new(asset) do
-      {:ok, _uri} ->
-        asset
+    asset_location =
+      with true <- Regex.match?(@uuid_regex, asset),
+           media_resolver when not is_nil(media_resolver) <- media_resolver(),
+           {:ok, %{url: asset_location}} <- apply(media_resolver(), :fetch_asset, [asset]) do
+        asset_location
+      else
+        _ ->
+          asset
+      end
+
+    case URI.new(asset_location) do
+      {:ok, uri} ->
+        URI.to_string(uri)
 
       _ ->
         Logger.error("image_url not implemented yet #{inspect(asset)} #{inspect(opts)}")
@@ -742,6 +754,10 @@ defmodule Gas.Filters.Filter.Asset do
 
   defp theme_base do
     Application.get_env(:gas, :theme_assets_relative_path, "")
+  end
+
+  defp media_resolver do
+    Application.get_env(:gas, :media_resolver)
   end
 end
 
