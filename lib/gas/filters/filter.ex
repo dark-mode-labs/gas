@@ -104,15 +104,15 @@ defmodule Gas.Filters.Filter.Numeric do
   defp to_decimal(_), do: @zero
 
   defp decimal_to_float(value) do
-    if Decimal.integer?(value) do
-      "#{Decimal.to_integer(value)}.0"
-    else
-      value |> Decimal.normalize() |> Decimal.to_float() |> to_string()
-    end
+    value |> Decimal.normalize() |> Decimal.to_float()
   end
 
   defp try_decimal_to_integer(value) do
-    if Decimal.integer?(value), do: "#{Decimal.to_integer(value)}", else: decimal_to_float(value)
+    if Decimal.integer?(value) do
+      Decimal.to_integer(value)
+    else
+      decimal_to_float(value)
+    end
   end
 
   defp original_float?(input) when is_float(input), do: true
@@ -1003,13 +1003,19 @@ defmodule Gas.Filters.Filter.Format do
   def money(input), do: money(input, [])
 
   def money(input, opts) do
-    symbol =
-      case opts[:without_symbol] do
-        true -> ""
-        _ -> currency_symbol()
-      end
+    case currency() do
+      nil ->
+        symbol =
+          case opts[:without_symbol] do
+            true -> ""
+            _ -> currency_symbol()
+          end
 
-    money_format(input, symbol)
+        money_format(input, symbol)
+
+      module ->
+        module.format!(input, opts || [])
+    end
   end
 
   def money_without_trailing_zeros(input, _opts \\ []) do
@@ -1058,6 +1064,10 @@ defmodule Gas.Filters.Filter.Format do
   end
 
   defp currency_symbol, do: "$"
+
+  defp currency do
+    Application.get_env(:gas, :currency)
+  end
 end
 
 defmodule Gas.Filters.Filter.I18n do
