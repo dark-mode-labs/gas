@@ -108,7 +108,11 @@ defmodule Gas.Filters.Filter.Numeric do
   end
 
   defp try_decimal_to_integer(value) do
-    Decimal.to_integer(value)
+    if Decimal.integer?(value) do
+      Decimal.to_integer(value)
+    else
+      decimal_to_float(value)
+    end
   end
 
   defp original_float?(input) when is_float(input), do: true
