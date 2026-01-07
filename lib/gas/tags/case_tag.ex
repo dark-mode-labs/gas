@@ -81,6 +81,8 @@ defmodule Gas.Tags.CaseTag do
   end
 
   defimpl Gas.Renderable do
+    alias Gas.BinaryCondition
+
     def render(tag, context, options) do
       {:ok, value, context} = Gas.Argument.get(tag.argument, context, [], options)
 
@@ -108,12 +110,12 @@ defmodule Gas.Tags.CaseTag do
 
     defp match_arguments(arguments, value, context, options) do
       Enum.reduce_while(arguments, {:no_match, context}, fn arg, {_, ctx} ->
-        case Gas.Argument.get(arg, ctx, [], options) do
-          {:ok, ^value, ctx2} ->
-            {:halt, {:match, ctx2}}
+        {:ok, arg_value, ctx2} = Gas.Argument.get(arg, ctx, [], options)
 
-          {:ok, _value, ctx2} ->
-            {:cont, {:no_match, ctx2}}
+        if BinaryCondition.eval({value, :==, arg_value}) == {:ok, true} do
+          {:halt, {:match, ctx2}}
+        else
+          {:cont, {:no_match, ctx2}}
         end
       end)
     end
