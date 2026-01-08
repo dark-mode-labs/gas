@@ -476,6 +476,14 @@ defmodule Gas.Filters.Filter.Collection do
 
   def map_keys(%{} = map), do: Map.keys(map)
   def map_keys(_other), do: []
+
+  def exists?(%{} = map, key) when is_map_key(map, key), do: true
+
+  def exists?([_ | _] = list, key) do
+    key in list
+  end
+
+  def exists?(_, _), do: false
 end
 
 defmodule Gas.Filters.Filter.Date do
@@ -1207,6 +1215,7 @@ defmodule Gas.Filters.Filter do
   defdelegate where(xs, key, val), to: Collection
   defdelegate map_values(map), to: Collection
   defdelegate map_keys(map), to: Collection
+  defdelegate exists(map, key), to: Collection, as: :exists?
 
   # Delegates: date
   defdelegate date(x, fmt), to: Date
