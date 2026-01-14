@@ -2,6 +2,8 @@ defmodule Gas.Filters.Filter.Utils do
   @moduledoc "Shared helpers for all filters"
   alias Gas.Literal.Empty
 
+  @zero Decimal.new(0)
+
   # Type coercion
   def to_str(nil), do: ""
   def to_str(%Empty{}), do: ""
@@ -54,6 +56,26 @@ defmodule Gas.Filters.Filter.Utils do
   def to_number(v) when is_integer(v) or is_float(v), do: v
   def to_number(_), do: 0
 
+  def to_decimal(input) when is_binary(input) do
+    # Liquid semantics: floats only if pure float string; otherwise integer prefix allowed
+    if Regex.match?(~r/\A-?\d+\.\d+\z/, input) do
+      case Decimal.parse(input) do
+        {d, ""} -> d
+        _ -> @zero
+      end
+    else
+      case Integer.parse(input) do
+        {i, _} -> Decimal.new(i)
+        _ -> @zero
+      end
+    end
+  end
+
+  def to_decimal(input) when is_integer(input), do: Decimal.new(input)
+  def to_decimal(input) when is_float(input), do: Decimal.from_float(input)
+  def to_decimal(%Decimal{} = input), do: input
+  def to_decimal(_), do: @zero
+
   # Clamp variants
   def clamp(v, min, max) when is_number(v), do: min(max(v, min), max)
   def clamp(n) when n < 0, do: 0
@@ -75,33 +97,13 @@ defmodule Gas.Filters.Filter.Utils do
       end)
     end
   end
+
+  def zero, do: @zero
 end
 
 defmodule Gas.Filters.Filter.Numeric do
   @moduledoc "Numeric filters: math, rounding, limits, aggregation"
   import Gas.Filters.Filter.Utils
-
-  @zero Decimal.new(0)
-
-  defp to_decimal(input) when is_binary(input) do
-    # Liquid semantics: floats only if pure float string; otherwise integer prefix allowed
-    if Regex.match?(~r/\A-?\d+\.\d+\z/, input) do
-      case Decimal.parse(input) do
-        {d, ""} -> d
-        _ -> @zero
-      end
-    else
-      case Integer.parse(input) do
-        {i, _} -> Decimal.new(i)
-        _ -> @zero
-      end
-    end
-  end
-
-  defp to_decimal(input) when is_integer(input), do: Decimal.new(input)
-  defp to_decimal(input) when is_float(input), do: Decimal.from_float(input)
-  defp to_decimal(%Decimal{} = input), do: input
-  defp to_decimal(_), do: @zero
 
   defp decimal_to_float(value) do
     value |> Decimal.normalize() |> Decimal.to_float()
@@ -154,7 +156,7 @@ defmodule Gas.Filters.Filter.Numeric do
   def divided_by(a, b) do
     db = to_decimal(b)
 
-    if Decimal.equal?(db, @zero) do
+    if Decimal.equal?(db, zero()) do
       0
     else
       da = to_decimal(a)
@@ -170,7 +172,7 @@ defmodule Gas.Filters.Filter.Numeric do
   def modulo(a, b) do
     db = to_decimal(b)
 
-    if Decimal.equal?(db, @zero) do
+    if Decimal.equal?(db, zero()) do
       0
     else
       da = to_decimal(a)
@@ -227,7 +229,7 @@ defmodule Gas.Filters.Filter.Numeric do
         true -> raise %Gas.ArgumentError{message: "cannot select the property '#{prop}'"}
       end
     end)
-    |> Enum.reduce(@zero, &Decimal.add/2)
+    |> Enum.reduce(zero(), &Decimal.add/2)
     |> to_string()
   end
 end
@@ -484,6 +486,15 @@ defmodule Gas.Filters.Filter.Collection do
   end
 
   def exists?(_, _), do: false
+
+  def decode_json(json) when is_binary(json) do
+    case JSON.decode(json) do
+      {:ok, map} -> List.wrap(map)
+      {:error, _} -> []
+    end
+  end
+
+  def decode_json(_), do: []
 end
 
 defmodule Gas.Filters.Filter.Date do
@@ -716,7 +727,9 @@ defmodule Gas.Filters.Filter.Asset do
 
   def image_url(invalid_link, _opts) when invalid_link in [nil, "", [""]], do: nil
 
-  def image_url(asset, opts) do
+  def image_url([head | _rest], opts), do: image_url(head, opts)
+
+  def image_url(asset, opts) when is_binary(asset) do
     asset_location =
       with true <- Regex.match?(@uuid_regex, asset),
            media_resolver when not is_nil(media_resolver) <- media_resolver(),
@@ -1007,6 +1020,7 @@ end
 
 defmodule Gas.Filters.Filter.Format do
   @moduledoc "Formatting filters like money"
+  import Gas.Filters.Filter.Utils
 
   def money(input), do: money(input, [])
 
@@ -1019,31 +1033,20 @@ defmodule Gas.Filters.Filter.Format do
             _ -> currency_symbol()
           end
 
-        money_format(input, symbol)
+        input
+        |> to_decimal()
+        |> money_format(symbol)
 
       module ->
-        module.format!(input, opts || [])
+        input
+        |> to_integer()
+        |> module.format!(opts || [])
     end
   end
 
   def money_without_trailing_zeros(input, _opts \\ []) do
     input |> money() |> String.replace(~r/\.00$/, "")
   end
-
-  defp money_format(nil, _symbol), do: ""
-
-  defp money_format(input, symbol) when is_binary(input) do
-    case Float.parse(input) do
-      {num, _} -> money_format(num, symbol)
-      :error -> input
-    end
-  end
-
-  defp money_format(input, symbol) when is_integer(input),
-    do: format_money_amount(input / 100.0, symbol)
-
-  defp money_format(input, symbol) when is_float(input),
-    do: format_money_amount(input, symbol)
 
   defp money_format(%Decimal{} = input, symbol),
     do: format_money_amount(Decimal.to_float(input), symbol)
@@ -1216,6 +1219,7 @@ defmodule Gas.Filters.Filter do
   defdelegate map_values(map), to: Collection
   defdelegate map_keys(map), to: Collection
   defdelegate exists(map, key), to: Collection, as: :exists?
+  defdelegate decode_json(json), to: Collection
 
   # Delegates: date
   defdelegate date(x, fmt), to: Date
