@@ -328,6 +328,39 @@ defmodule Gas.Filters.Filter.String do
   end
 end
 
+defmodule Gas.Filters.Filter.DataSource do
+  @moduledoc """
+  Filter for external data retrieval - fetch and list
+  """
+  require Logger
+
+  def apply(entity_type, method_type, args \\ %{})
+
+  def apply(type, "list", args) do
+    try do
+      resolver().list(:"#{type}", args)
+    rescue
+      error ->
+        Logger.error(error)
+        []
+    end
+  end
+
+  def apply(type, "fetch", args) do
+    try do
+      resolver().fetch(:"#{type}", args)
+    rescue
+      error ->
+        Logger.error(error)
+        nil
+    end
+  end
+
+  defp resolver do
+    Application.fetch_env!(:gas, :data_source)
+  end
+end
+
 defmodule Gas.Filters.Filter.Collection do
   @moduledoc "Array and collection filters"
   require Gas.BinaryCondition
@@ -370,9 +403,12 @@ defmodule Gas.Filters.Filter.Collection do
 
   def sort(input, key) do
     Enum.sort_by(input, fn element ->
-      case Gas.Matcher.match(element, List.wrap(key)) do
-        {:ok, value} -> value
-        _ -> nil
+      case map(element, key) do
+        [head | _rest] ->
+          head
+
+        other ->
+          other
       end
     end)
   end
@@ -393,91 +429,50 @@ defmodule Gas.Filters.Filter.Collection do
 
   def size(_), do: 0
 
-  def map(xs, prop) when is_list(xs) do
-    xs
-    |> List.flatten()
-    |> Enum.map(fn item ->
-      cond do
-        is_map(item) and not is_struct(item) ->
-          item[prop]
+  def map(empty, _prop) when Gas.BinaryCondition.match_empty?(empty), do: []
 
-        is_integer(item) ->
-          raise %Gas.ArgumentError{message: "cannot select the property '#{prop}'"}
+  def map(input, prop) when is_binary(prop) do
+    keys = String.split(prop, ".")
 
-        true ->
-          nil
-      end
-    end)
+    case Gas.Matcher.match(input, keys) do
+      {:ok, result} -> result |> List.wrap() |> List.flatten()
+      _ -> []
+    end
   end
-
-  def map(map, prop) when is_map(map) and not is_struct(map), do: map[prop]
-  def map(bin, _prop) when is_binary(bin), do: ""
-  def map(nil, _), do: nil
 
   def map(_, prop),
     do: raise(%Gas.ArgumentError{message: "cannot select the property '#{prop}'"})
 
-  def find(input, prop, match_val) when is_binary(prop) do
-    case input do
-      list when is_list(list) ->
-        Enum.find(list, fn
-          %{} = map -> Map.get(map, prop) == match_val
-          struct when is_struct(struct) -> Map.get(Map.from_struct(struct), prop) == match_val
-          _ -> false
-        end)
-
-      _ ->
-        nil
-    end
-  end
-
-  def find_index(list, value) do
-    Enum.find_index(list || [], &(&1 == value))
-  end
-
-  def find_index(%{} = list, "id", key) do
-    Enum.find_index(list, fn
-      {^key, _value} -> true
-      {_key, _value} -> false
-    end)
-  end
-
-  def find_index(list, key, value) do
-    Enum.find_index(list || [], fn %{} = item ->
-      Map.get(item, key) == value
-    end)
+  def where_blank(input, key) do
+    where(input, key, %Gas.Literal.Empty{})
   end
 
   def where(empty_input, _key, _value) when Gas.BinaryCondition.match_empty?(empty_input),
     do: []
 
-  def where(input, key, value) when not is_list(key) do
-    where(input, [key], value)
-  end
-
-  def where([_ | _] = input, key, value) do
+  def where(input, key, value) do
     Enum.filter(input, fn element ->
-      case Gas.Matcher.match(element, key) do
-        {:ok, resolved_value} ->
-          Gas.BinaryCondition.eval({value, :==, resolved_value}) == {:ok, true}
+      comparison =
+        case map(element, key) do
+          [head | _rest] ->
+            head
 
-        _ ->
-          false
-      end
+          _other ->
+            []
+        end
+
+      Gas.BinaryCondition.eval({value, :==, comparison}) == {:ok, true}
     end)
   end
 
-  def where(_input, _key, _value), do: []
+  def values(%{} = map), do: Map.values(map)
+  def values(other), do: List.wrap(other)
 
-  def where(input, key) do
-    where(input, key, nil)
-  end
+  def keys(%{} = map), do: Map.keys(map)
+  def keys(_other), do: []
 
-  def map_values(%{} = map), do: Map.values(map)
-  def map_values(_other), do: []
-
-  def map_keys(%{} = map), do: Map.keys(map)
-  def map_keys(_other), do: []
+  def list(empty_input) when Gas.BinaryCondition.match_empty?(empty_input), do: []
+  def list(entry), do: List.wrap(entry)
 
   def exists?(%{} = map, key) when is_map_key(map, key), do: true
 
@@ -489,12 +484,16 @@ defmodule Gas.Filters.Filter.Collection do
 
   def decode_json(json) when is_binary(json) do
     case JSON.decode(json) do
-      {:ok, map} -> List.wrap(map)
-      {:error, _} -> []
+      {:ok, map} -> map
+      {:error, _} -> %{}
     end
   end
 
-  def decode_json(_), do: []
+  def decode_json(%{} = json), do: json
+
+  def decode_json(_other) do
+    %{}
+  end
 end
 
 defmodule Gas.Filters.Filter.Date do
@@ -720,6 +719,7 @@ end
 
 defmodule Gas.Filters.Filter.Asset do
   @moduledoc "Asset/media helpers"
+  alias Gas.Filters.Filter.DataSource
 
   @uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -732,8 +732,8 @@ defmodule Gas.Filters.Filter.Asset do
   def image_url(asset, opts) when is_binary(asset) do
     asset_location =
       with true <- Regex.match?(@uuid_regex, asset),
-           media_resolver when not is_nil(media_resolver) <- media_resolver(),
-           {:ok, %{url: asset_location}} <- apply(media_resolver(), :fetch_asset, [asset]) do
+           %{url: asset_location} <-
+             DataSource.apply("asset", "fetch", %{asset_identifier: asset}) do
         asset_location
       else
         _ ->
@@ -775,10 +775,6 @@ defmodule Gas.Filters.Filter.Asset do
 
   defp theme_base do
     Application.get_env(:gas, :theme_assets_relative_path, "")
-  end
-
-  defp media_resolver do
-    Application.get_env(:gas, :media_resolver)
   end
 end
 
@@ -999,6 +995,15 @@ defmodule Gas.Filters.Filter.Encoding do
 
   # MD5
   def md5(args), do: :crypto.hash(:md5, args)
+
+  def parse_kv(bin) do
+    bin
+    |> :binary.split([",", ":"], [:global, :trim])
+    |> Enum.chunk_every(2)
+    |> Map.new(fn [k, v] ->
+      {:"#{String.trim(k)}", String.trim(v)}
+    end)
+  end
 end
 
 defmodule Gas.Filters.Filter.Logic do
@@ -1141,6 +1146,7 @@ defmodule Gas.Filters.Filter do
   alias Gas.Filters.Filter.{
     Numeric,
     Collection,
+    DataSource,
     Date,
     Color,
     Asset,
@@ -1211,15 +1217,15 @@ defmodule Gas.Filters.Filter do
   defdelegate sort_natural(x), to: Collection
   defdelegate size(x), to: Collection
   defdelegate map(xs, prop), to: Collection
-  defdelegate find(xs, prop, val), to: Collection
-  defdelegate find_index(xs, val), to: Collection
-  defdelegate find_index(xs, key, value), to: Collection
-  defdelegate where(xs, key), to: Collection
+  defdelegate where_blank(xs, key), to: Collection
   defdelegate where(xs, key, val), to: Collection
-  defdelegate map_values(map), to: Collection
-  defdelegate map_keys(map), to: Collection
+  defdelegate values(map), to: Collection
+  defdelegate keys(map), to: Collection
   defdelegate exists(map, key), to: Collection, as: :exists?
   defdelegate decode_json(json), to: Collection
+  defdelegate list(input), to: Collection
+
+  defdelegate data_source(entity_type, method_type, args \\ %{}), to: DataSource, as: :apply
 
   # Delegates: date
   defdelegate date(x, fmt), to: Date
@@ -1263,6 +1269,7 @@ defmodule Gas.Filters.Filter do
   defdelegate json(x), to: Encoding
   defdelegate structured_data(x), to: Encoding
   defdelegate md5(x), to: Encoding
+  defdelegate parse_kv(x), to: Encoding
 
   # Delegates: logic/format
   defdelegate default(input, value \\ "", opts \\ %{}), to: Logic

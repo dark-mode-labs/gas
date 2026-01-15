@@ -24,6 +24,24 @@ defimpl Gas.Matcher, for: List do
     end
   end
 
+  def match(data, keys) when is_list(keys) do
+    result =
+      data
+      |> List.flatten()
+      |> Enum.reduce([], fn element, acc ->
+        case @protocol.match(element, keys) do
+          {:ok, resolved_value} ->
+            [resolved_value | acc]
+
+          _ ->
+            acc
+        end
+      end)
+      |> Enum.reverse()
+
+    {:ok, result}
+  end
+
   def match(_data, _) do
     {:error, :not_found}
   end
