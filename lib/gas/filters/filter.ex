@@ -450,7 +450,7 @@ defmodule Gas.Filters.Filter.Collection do
   def where(empty_input, _key, _value) when Gas.BinaryCondition.match_empty?(empty_input),
     do: []
 
-  def where(input, key, value) do
+  def where(input, key, value) when is_list(input) do
     Enum.filter(input, fn element ->
       comparison =
         case map(element, key) do
