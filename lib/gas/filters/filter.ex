@@ -465,6 +465,8 @@ defmodule Gas.Filters.Filter.Collection do
     end)
   end
 
+  def where(_input, _key, _value), do: []
+
   def values(%{} = map), do: Map.values(map)
   def values(other), do: List.wrap(other)
 
