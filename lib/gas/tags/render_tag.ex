@@ -222,56 +222,57 @@ defmodule Gas.Tags.RenderTag do
     end
 
     defp build_contexts(args, outer_context, options) do
-      {vars, outer_context} =
-        Enum.reduce(args, {%{}, outer_context}, fn {k, v}, {args, outer_context} ->
+      {drop_args, regular_args} =
+        Enum.split_with(args, fn {k, _v} -> String.contains?(k, ".") end)
+
+      {regular_vars, outer_context} =
+        Enum.reduce(regular_args, {%{}, outer_context}, fn {k, v},
+                                                           {regular_args, outer_context} ->
           {:ok, value, outer_context} = Argument.get(v, outer_context, [], options)
 
-          {k, v} =
-            if String.contains?(k, ".") do
-              build_drops_arg(k, value, outer_context, options)
-            else
-              {k, value}
+          {Map.put(regular_args, k, value), outer_context}
+        end)
+
+      {drop_vars, outer_context} =
+        Enum.reduce(drop_args, {%{}, outer_context}, fn {k, v}, {drop_args, outer_context} ->
+          [head | rest] = String.split(k, ".")
+
+          {value_tree, outer_context} =
+            rest
+            |> Enum.reverse()
+            |> Enum.reduce({v, outer_context}, fn key, {acc, outer_context} ->
+              {:ok, value, outer_context} = Argument.get(acc, outer_context, [], options)
+
+              {%{key => value}, outer_context}
+            end)
+
+          {current_head, outer_context} =
+            case Argument.get(
+                   struct!(Gas.Variable,
+                     identifier: head,
+                     original_name: head,
+                     accesses: [],
+                     loc: nil
+                   ),
+                   outer_context,
+                   [],
+                   options
+                 ) do
+              {:ok, %{} = map, outer_context} ->
+                {map, outer_context}
+
+              _ ->
+                {%{}, outer_context}
             end
 
-          {Map.put(args, k, v), outer_context}
+          map_value =
+            current_head |> Map.merge(Map.get(drop_args, head, %{})) |> Map.merge(value_tree)
+
+          {Map.put(drop_args, head, map_value), outer_context}
         end)
 
-      inner_context = %Context{vars: vars}
+      inner_context = %Context{vars: Map.merge(regular_vars, drop_vars)}
       {[inner_context], outer_context}
-    end
-
-    defp build_drops_arg(dotted_arg, value, context, options) do
-      [head | rest] = String.split(dotted_arg, ".")
-
-      map_value =
-        rest
-        |> Enum.reverse()
-        |> Enum.reduce(value, fn key, acc ->
-          %{key => acc}
-        end)
-
-      current_map_value =
-        case Argument.get(
-               %Gas.Variable{
-                 identifier: head,
-                 loc: nil,
-                 accesses: [],
-                 original_name: head
-               },
-               context,
-               [],
-               options
-             ) do
-          {:ok, %{} = value, _outer_context} ->
-            value
-
-          _ ->
-            %{}
-        end
-
-      merged_value = Map.merge(current_map_value, map_value)
-
-      {head, merged_value}
     end
 
     defp build_forloop_map(index, length) do

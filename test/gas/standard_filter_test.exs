@@ -40,6 +40,13 @@ defmodule Gas.StandardFilterTest do
 
     test "where filter test" do
       assert StandardFilter.apply(
+               "where_blank",
+               [[%{"arg" => "Hi"}, %{"arg" => "Hello"}], "arg"],
+               @loc,
+               []
+             ) == {:ok, []}
+
+      assert StandardFilter.apply(
                "where",
                [[%{"arg" => "Hi"}, %{"arg" => "Hello"}], "arg", "Hello"],
                @loc,
@@ -49,13 +56,13 @@ defmodule Gas.StandardFilterTest do
       assert StandardFilter.apply(
                "where",
                [
-                 [%{"name" => "Hello", "key" => "hello"}, %{"name" => "Null", "key" => nil}],
+                 [%{"name" => "Hello", "key" => "hello"}, %{"name" => "Null", "key" => ""}],
                  "key",
-                 nil
+                 ""
                ],
                @loc,
                []
-             ) == {:ok, [%{"key" => nil, "name" => "Null"}]}
+             ) == {:ok, [%{"key" => "", "name" => "Null"}]}
     end
 
     test "sort filter test" do

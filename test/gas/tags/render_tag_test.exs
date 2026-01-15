@@ -29,7 +29,20 @@ defmodule Gas.Tags.RenderTagTest do
     end
 
     def read_template_file("dotted_arg", _opts) do
-      {:ok, "{{ arg.sub-arg }} {{ arg2}}"}
+      {:ok, "{{ arg.sub-arg }} {{ arg2 }}"}
+    end
+
+    def read_template_file("dotted_arg_2", _opts) do
+      {:ok, "{{ arg.arg1 }} {{ arg.sub-arg }} {{ arg2 }} {{ arg.arg2 }}"}
+    end
+
+    def read_template_file("dotted_arg_4", _opts) do
+      {:ok, "<div {{ arg.id }} {{ arg.second_id }}>{{ arg.content }}</div>"}
+    end
+
+    def read_template_file("dotted_arg_3", _opts) do
+      {:ok,
+       "{% capture rendered %}{% for i in items %}{% assign local_result = result | append: i  %}{% render 'dotted_arg_4', arg: arg, arg.second_id: i, arg.content: local_result %}{% endfor %}{% endcapture %}<div {{ arg.id }}>{{ rendered }}</div>"}
     end
 
     def read_template_file("forloop", _opts) do
@@ -327,6 +340,22 @@ defmodule Gas.Tags.RenderTagTest do
 
       assert Gas.Renderable.render(tag, context, options) ==
                {[["mickey", " ", "<h1>mickey mouse</h1>"]], context}
+    end
+
+    test "shit" do
+      template =
+        "{% assign var = 'hello ' | append: var1 %}{% capture result %}{% render 'dotted_arg_2', arg.sub-arg: var, arg.arg1: var1, arg2: var2 %}{% endcapture %}{% render 'dotted_arg_3', arg.id: 0, result: result, items: items %}"
+
+      context = %Gas.Context{vars: %{"var1" => "mickey", "var2" => "mouse", "items" => [1, 2]}}
+
+      {:ok, template} = Gas.parse(template)
+      options = [file_system: {TestFileSystem, nil}]
+
+      assert {:ok, flattened, []} =
+               Gas.render(template, context, options)
+
+      assert "<div 0><div 0 1>mickey hello mickey mouse 1</div><div 0 2>mickey hello mickey mouse 2</div></div>" ==
+               IO.iodata_to_binary(flattened)
     end
   end
 end

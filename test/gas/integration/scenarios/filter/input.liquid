@@ -461,11 +461,11 @@ map
 
 where
 
-{{ float | where: 'title' }}
-{{ string | where: 'title' }}
-{{ unknown | where: 'title' }}
-{{ true | where: 'title' }}
-{{ false | where: 'title' }}
+{{ float | where: 'title', 'title' }}
+{{ string | where: 'title', 'title' }}
+{{ unknown | where: 'title', 'title' }}
+{{ true | where: 'title', 'title' }}
+{{ false | where: 'title', 'title' }}
 {{ posts | where: 'title', 'Title 3' | map: 'title' }}
 
 newline_to_br
