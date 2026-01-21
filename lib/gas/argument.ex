@@ -143,9 +143,7 @@ defmodule Gas.Argument do
   end
 
   defp stringify!(value) when is_list(value) do
-    value
-    |> List.flatten()
-    |> Enum.join()
+    IO.iodata_to_binary(value)
   end
 
   defp stringify!(value) when is_map(value) and not is_struct(value) do
@@ -220,13 +218,13 @@ defmodule Gas.Argument do
     if String.contains?(input, "{{") and String.contains?(input, "}}") do
       with {:ok, parsed} <- Gas.parse(input, opts),
            {:ok, rendered_text, errors} <- Gas.render(parsed, context, opts) do
-        {rendered_text, Context.put_errors(context, Enum.reverse(errors))}
+        {IO.iodata_to_binary(rendered_text), Context.put_errors(context, Enum.reverse(errors))}
       else
         {:error, %Gas.TemplateError{} = error} ->
           {input, Context.put_errors(context, error)}
 
         {:error, errors, rendered_text} ->
-          {rendered_text, Context.put_errors(context, Enum.reverse(errors))}
+          {IO.iodata_to_binary(rendered_text), Context.put_errors(context, Enum.reverse(errors))}
       end
     else
       {input, context}
