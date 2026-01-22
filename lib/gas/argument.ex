@@ -142,25 +142,31 @@ defmodule Gas.Argument do
     {:ok, stringify!(value), context}
   end
 
-  defp stringify!(value) when is_list(value) do
-    IO.iodata_to_binary(value)
+  def stringify!(value) do
+    value
+    |> stringify_iolist!()
+    |> IO.iodata_to_binary()
   end
 
-  defp stringify!(value) when is_map(value) and not is_struct(value) do
-    "#{inspect(value)}"
+  defp stringify_iolist!(value) when is_list(value) do
+    Enum.map(value, &stringify_iolist!/1)
   end
 
-  defp stringify!(%Literal.Empty{}), do: ""
-
-  defp stringify!(range) when is_struct(range, Range) do
-    "#{range.first}..#{range.last}"
+  defp stringify_iolist!(value) when is_map(value) and not is_struct(value) do
+    inspect(value)
   end
 
-  defp stringify!(two_tuple) when is_tuple(two_tuple) and tuple_size(two_tuple) == 2 do
-    "#{elem(two_tuple, 0)}#{elem(two_tuple, 1)}"
+  defp stringify_iolist!(%Literal.Empty{}), do: ""
+
+  defp stringify_iolist!(%Range{first: first, last: last}) do
+    [stringify_iolist!(first), "..", stringify_iolist!(last)]
   end
 
-  defp stringify!(value), do: to_string(value)
+  defp stringify_iolist!(value) when is_tuple(value) and tuple_size(value) == 2 do
+    [stringify_iolist!(elem(value, 0)), stringify_iolist!(elem(value, 1))]
+  end
+
+  defp stringify_iolist!(value), do: to_string(value)
 
   @spec get(t, Context.t(), [Filter.t()], Keyword.t()) :: {:ok, term, Context.t()}
   def get(arg, context, filters, opts \\ []) do

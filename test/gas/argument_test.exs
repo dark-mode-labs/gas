@@ -476,4 +476,85 @@ defmodule Gas.ArgumentTest do
       assert {:ok, "TEXT", ^context} = Argument.get(arg, context, filters)
     end
   end
+
+  describe "stringify!/1" do
+    test "stringifies simple scalars" do
+      assert Argument.stringify!(123) == "123"
+      assert Argument.stringify!(1.5) == "1.5"
+      assert Argument.stringify!(:ok) == "ok"
+      assert Argument.stringify!("hello") == "hello"
+    end
+
+    test "stringifies floats compactly" do
+      assert Argument.stringify!(1.0) == "1.0"
+      assert Argument.stringify!(1.2300) == "1.23"
+      assert Argument.stringify!(123_456.0) == "123456.0"
+    end
+
+    test "stringifies lists by concatenation" do
+      assert Argument.stringify!([1, 2, 3]) == "123"
+      assert Argument.stringify!(["a", "b", "c"]) == "abc"
+      assert Argument.stringify!([1, "a", :ok]) == "1aok"
+    end
+
+    test "stringifies nested lists efficiently" do
+      value = [1, [2, [3, 4.5]], "x"]
+      assert Argument.stringify!(value) == "1234.5x"
+    end
+
+    test "stringifies Literal.Empty as empty string" do
+      assert Argument.stringify!(%Literal.Empty{}) == ""
+      assert Argument.stringify!(["a", %Literal.Empty{}, "b"]) == "ab"
+    end
+
+    test "stringifies ranges as first..last" do
+      assert Argument.stringify!(1..3) == "1..3"
+      assert Argument.stringify!([:a, 1..2, :b]) == "a1..2b"
+    end
+
+    test "stringifies two-element tuples by concatenation" do
+      assert Argument.stringify!({1, 2}) == "12"
+      assert Argument.stringify!({"a", :b}) == "ab"
+      assert Argument.stringify!([{:a, 1}, {:b, 2}]) == "a1b2"
+    end
+
+    test "stringifies maps via inspect/1" do
+      assert Argument.stringify!(%{a: 1}) == "%{a: 1}"
+      assert Argument.stringify!([%{a: 1}, %{b: 2}]) == "%{a: 1}%{b: 2}"
+    end
+
+    test "stringifies structs via to_string/1 fallback" do
+      datetime = ~U[2024-01-01 00:00:00Z]
+      assert Argument.stringify!(datetime) == DateTime.to_string(datetime)
+    end
+
+    test "handles deeply nested mixed structures" do
+      value = [
+        1,
+        {2, [3.0, %Literal.Empty{}]},
+        4..6,
+        %{x: 1}
+      ]
+
+      assert Argument.stringify!(value) == "123.04..6%{x: 1}"
+    end
+
+    test "never raises for supported types" do
+      values = [
+        1,
+        1.2,
+        :ok,
+        "x",
+        [1, 2, [3]],
+        {1, 2},
+        1..2,
+        %{a: 1},
+        %Literal.Empty{}
+      ]
+
+      Enum.each(values, fn v ->
+        assert is_binary(Argument.stringify!(v))
+      end)
+    end
+  end
 end
