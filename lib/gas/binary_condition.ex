@@ -34,26 +34,14 @@ defmodule Gas.BinaryCondition do
   @spec eval({term, Gas.Lexer.operator(), term}) :: {:ok, boolean} | {:error, binary}
 
   # == with empty
-  def eval({v1, :==, empty}) when match_empty?(empty) and is_map(v1) and not is_struct(v1),
-    do: {:ok, v1 == %{}}
-
-  def eval({empty, :==, v2}) when match_empty?(empty) and is_map(v2) and not is_struct(v2),
-    do: {:ok, v2 == %{}}
-
-  def eval({v1, :==, empty}) when match_empty?(empty) and is_list(v1), do: {:ok, v1 == []}
-  def eval({empty, :==, v2}) when match_empty?(empty) and is_list(v2), do: {:ok, v2 == []}
-
-  def eval({v1, :==, empty}) when match_empty?(empty) and is_binary(v1),
-    do: {:ok, String.trim(v1) == ""}
-
-  def eval({empty, :==, v2}) when match_empty?(empty) and is_binary(v2),
-    do: {:ok, String.trim(v2) == ""}
+  def eval({v1, :==, v2}) when match_empty?(v1) and match_empty?(v2), do: {:ok, true}
 
   # != with empty
-  def eval({v1, :!=, empty}) when match_empty?(empty), do: {:ok, not match_empty?(v1)}
-  def eval({empty, :!=, v2}) when match_empty?(empty), do: {:ok, not match_empty?(v2)}
-  def eval({v1, :<>, empty}) when match_empty?(empty), do: {:ok, not match_empty?(v1)}
-  def eval({empty, :<>, v2}) when match_empty?(empty), do: {:ok, not match_empty?(v2)}
+  def eval({v1, op, empty}) when match_empty?(empty) and op in [:!=, :<>],
+    do: {:ok, !match_empty?(v1)}
+
+  def eval({empty, op, v2}) when match_empty?(empty) and op in [:!=, :<>],
+    do: {:ok, !match_empty?(v2)}
 
   # contains
   def eval({nil, :contains, _}), do: {:ok, false}
