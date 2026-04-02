@@ -496,6 +496,17 @@ defmodule Gas.Filters.Filter.Collection do
   def decode_json(_other) do
     %{}
   end
+
+  def push(blank, input) when Gas.BinaryCondition.match_empty?(blank) and not is_list(blank),
+    do: push([], input)
+
+  def push(collection, blank) when Gas.BinaryCondition.match_empty?(blank), do: collection
+
+  def push(collection, input) when is_list(collection) do
+    List.insert_at(collection, -1, input)
+  end
+
+  def push(collection, input), do: push([collection], input)
 end
 
 defmodule Gas.Filters.Filter.Date do
@@ -1226,6 +1237,7 @@ defmodule Gas.Filters.Filter do
   defdelegate exists(map, key), to: Collection, as: :exists?
   defdelegate decode_json(json), to: Collection
   defdelegate list(input), to: Collection
+  defdelegate push(collection, input), to: Collection
 
   defdelegate data_source(entity_type, method_type, args \\ %{}), to: DataSource, as: :apply
 
