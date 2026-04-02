@@ -507,6 +507,14 @@ defmodule Gas.Filters.Filter.Collection do
   end
 
   def push(collection, input), do: push([collection], input)
+
+  def push_if(collection, input, condition) do
+    if Gas.BinaryCondition.eval({condition, :==, true}) == {:ok, true} do
+      push(collection, input)
+    else
+      collection
+    end
+  end
 end
 
 defmodule Gas.Filters.Filter.Date do
@@ -1238,6 +1246,7 @@ defmodule Gas.Filters.Filter do
   defdelegate decode_json(json), to: Collection
   defdelegate list(input), to: Collection
   defdelegate push(collection, input), to: Collection
+  defdelegate push_if(collection, input, condition), to: Collection
 
   defdelegate data_source(entity_type, method_type, args \\ %{}), to: DataSource, as: :apply
 
