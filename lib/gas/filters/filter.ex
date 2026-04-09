@@ -818,13 +818,13 @@ defmodule Gas.Filters.Filter.HTML do
     end
   end
 
-  def preload_tag(url, opts \\ []) when is_binary(url) do
-    as_value = opts[:as] || "script"
+  def preload_tag(url, opts \\ %{}) when is_binary(url) do
+    as_value = Map.get(opts, "as", "style")
     ~s(<link rel="preload" href="#{url}" as="#{as_value}">)
   end
 
-  def stylesheet_tag(url, opts \\ []) when is_binary(url) do
-    media = opts[:media] || "all"
+  def stylesheet_tag(url, opts \\ %{}) when is_binary(url) do
+    media = Map.get(opts, "media", "all")
     ~s(<link rel="stylesheet" href="#{url}" media="#{media}">)
   end
 
@@ -855,12 +855,6 @@ defmodule Gas.Filters.Filter.HTML do
       |> Enum.map_join(" ", fn {k, v} -> ~s(#{k}="#{escape_attr(v)}") end)
 
     ~s(<video #{attrs}#{poster_attr}><source src="#{Gas.Filters.Filter.Asset.asset_url(asset)}"></video>)
-  end
-
-  def placeholder_svg_tag(name, class) do
-    class_attr = if is_list(class), do: Enum.join(class, " "), else: to_string(class)
-
-    ~s(<placeholder-image class="#{class_attr}"><img alt="" src="https://placehold.co/600x400?text=#{name}"></placeholder-image>)
   end
 
   def inline_asset_content(asset_name) do
@@ -1070,7 +1064,7 @@ defmodule Gas.Filters.Filter.Format do
     end
   end
 
-  def money_without_trailing_zeros(input, _opts \\ []) do
+  def money_without_trailing_zeros(input) do
     input |> money() |> String.replace(~r/\.00$/, "")
   end
 
@@ -1268,11 +1262,10 @@ defmodule Gas.Filters.Filter do
   defdelegate font_url(font), to: Asset
 
   defdelegate link_to(text, url, attrs \\ %{}), to: HTML
-  defdelegate preload_tag(url, opts \\ []), to: HTML
-  defdelegate stylesheet_tag(url, opts \\ []), to: HTML
+  defdelegate preload_tag(url, opts \\ %{}), to: HTML
+  defdelegate stylesheet_tag(url, opts \\ %{}), to: HTML
   defdelegate image_tag(url_or_asset, opts \\ %{}), to: HTML
   defdelegate video_tag(asset, opts \\ %{}), to: HTML
-  defdelegate placeholder_svg_tag(name, class \\ []), to: HTML
   defdelegate inline_asset_content(name), to: HTML
   defdelegate font_modify(name, key_or_opts, maybe_value \\ nil), to: HTML, as: :font_modify
   defdelegate font_face(fonts, opts \\ %{}), to: HTML
