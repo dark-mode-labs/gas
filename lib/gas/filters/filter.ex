@@ -338,20 +338,24 @@ defmodule Gas.Filters.Filter.DataSource do
 
   def apply(type, "list", args) do
     try do
-      resolver().list(:"#{type}", args)
+      args = args_to_map(args)
+      type = to_atom(type)
+      resolver().list(type, args)
     rescue
       error ->
-        Logger.error(error)
+        Logger.error(this: error, type: type, apply: "list", args: args)
         []
     end
   end
 
   def apply(type, "fetch", args) do
     try do
-      resolver().fetch(:"#{type}", args)
+      args = args_to_map(args)
+      type = to_atom(type)
+      resolver().fetch(type, args)
     rescue
       error ->
-        Logger.error(error)
+        Logger.error(this: error, type: type, apply: "fetch", args: args)
         nil
     end
   end
@@ -359,6 +363,17 @@ defmodule Gas.Filters.Filter.DataSource do
   defp resolver do
     Application.fetch_env!(:gas, :data_source)
   end
+
+  defp args_to_map(args) when is_list(args) do
+    args
+    |> Enum.chunk_every(2)
+    |> Map.new(fn [key, value] -> {to_atom(key), value} end)
+  end
+
+  defp args_to_map(args), do: args
+
+  defp to_atom(value) when is_atom(value), do: value
+  defp to_atom(value), do: String.to_existing_atom(value)
 end
 
 defmodule Gas.Filters.Filter.Collection do
@@ -754,7 +769,7 @@ defmodule Gas.Filters.Filter.Asset do
     asset_location =
       with true <- Regex.match?(@uuid_regex, asset),
            %{url: asset_location} <-
-             DataSource.apply("asset", "fetch", %{asset_identifier: asset}) do
+             DataSource.apply(:asset, "fetch", [:asset_identifier, asset]) do
         asset_location
       else
         _ ->
@@ -1010,15 +1025,6 @@ defmodule Gas.Filters.Filter.Encoding do
 
   # MD5
   def md5(args), do: :crypto.hash(:md5, args)
-
-  def parse_kv(bin) do
-    bin
-    |> :binary.split([",", ":"], [:global, :trim])
-    |> Enum.chunk_every(2)
-    |> Map.new(fn [k, v] ->
-      {:"#{String.trim(k)}", String.trim(v)}
-    end)
-  end
 end
 
 defmodule Gas.Filters.Filter.Logic do
@@ -1285,7 +1291,6 @@ defmodule Gas.Filters.Filter do
   defdelegate json(x), to: Encoding
   defdelegate structured_data(x), to: Encoding
   defdelegate md5(x), to: Encoding
-  defdelegate parse_kv(x), to: Encoding
 
   # Delegates: logic/format
   defdelegate default(input, value \\ "", opts \\ %{}), to: Logic
