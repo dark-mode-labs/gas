@@ -328,54 +328,6 @@ defmodule Gas.Filters.Filter.String do
   end
 end
 
-defmodule Gas.Filters.Filter.DataSource do
-  @moduledoc """
-  Filter for external data retrieval - fetch and list
-  """
-  require Logger
-
-  def apply(entity_type, method_type, args \\ %{})
-
-  def apply(type, "list", args) do
-    try do
-      args = args_to_map(args)
-      type = to_atom(type)
-      resolver().list(type, args)
-    rescue
-      error ->
-        Logger.error(this: error, type: type, apply: "list", args: args)
-        []
-    end
-  end
-
-  def apply(type, "fetch", args) do
-    try do
-      args = args_to_map(args)
-      type = to_atom(type)
-      resolver().fetch(type, args)
-    rescue
-      error ->
-        Logger.error(this: error, type: type, apply: "fetch", args: args)
-        nil
-    end
-  end
-
-  defp resolver do
-    Application.fetch_env!(:gas, :data_source)
-  end
-
-  defp args_to_map(args) when is_list(args) do
-    args
-    |> Enum.chunk_every(2)
-    |> Map.new(fn [key, value] -> {to_atom(key), value} end)
-  end
-
-  defp args_to_map(args), do: args
-
-  defp to_atom(value) when is_atom(value), do: value
-  defp to_atom(value), do: String.to_existing_atom(value)
-end
-
 defmodule Gas.Filters.Filter.Collection do
   @moduledoc "Array and collection filters"
   require Gas.BinaryCondition
@@ -755,7 +707,6 @@ end
 
 defmodule Gas.Filters.Filter.Asset do
   @moduledoc "Asset/media helpers"
-  alias Gas.Filters.Filter.DataSource
 
   @uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -768,12 +719,10 @@ defmodule Gas.Filters.Filter.Asset do
   def image_url(asset, opts) when is_binary(asset) do
     asset_location =
       with true <- Regex.match?(@uuid_regex, asset),
-           %{url: asset_location} <-
-             DataSource.apply(:asset, "fetch", [:asset_identifier, asset]) do
-        asset_location
+           url when is_binary(url) <- resolve_asset_url(asset) do
+        url
       else
-        _ ->
-          asset
+        _ -> asset
       end
 
     case URI.new(asset_location) do
@@ -811,6 +760,13 @@ defmodule Gas.Filters.Filter.Asset do
 
   defp theme_base do
     Application.get_env(:gas, :theme_assets_relative_path, "")
+  end
+
+  defp resolve_asset_url(uuid) do
+    case Application.get_env(:gas, :asset_resolver) do
+      nil -> nil
+      mod -> mod.fetch_url(uuid)
+    end
   end
 end
 
@@ -1167,7 +1123,6 @@ defmodule Gas.Filters.Filter do
   alias Gas.Filters.Filter.{
     Numeric,
     Collection,
-    DataSource,
     Date,
     Color,
     Asset,
@@ -1247,8 +1202,6 @@ defmodule Gas.Filters.Filter do
   defdelegate list(input), to: Collection
   defdelegate push(collection, input), to: Collection
   defdelegate push_if(collection, input, condition), to: Collection
-
-  defdelegate data_source(entity_type, method_type, args \\ %{}), to: DataSource, as: :apply
 
   # Delegates: date
   defdelegate date(x, fmt), to: Date
