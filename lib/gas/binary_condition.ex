@@ -71,6 +71,16 @@ defmodule Gas.BinaryCondition do
       when op in [:<, :<=, :>, :>=, :==, :!=, :<>] and is_number(v1) and is_binary(v2),
       do: eval({v1, op, to_number(v2)})
 
+  def eval({v1, op, v2})
+      when op in [:<, :<=, :>, :>=, :==, :!=, :<>] and is_atom(v1) and is_binary(v2) and
+             v1 not in [nil, true, false],
+      do: eval({Atom.to_string(v1), op, v2})
+
+  def eval({v1, op, v2})
+      when op in [:<, :<=, :>, :>=, :==, :!=, :<>] and is_binary(v1) and is_atom(v2) and
+             v2 not in [nil, true, false],
+      do: eval({v1, op, Atom.to_string(v2)})
+
   # != and <> normalized
   def eval({v1, :!=, v2}), do: {:ok, v1 != v2}
   def eval({v1, :<>, v2}), do: {:ok, v1 != v2}
