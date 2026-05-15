@@ -46,5 +46,19 @@ defmodule Gas.BinaryConditionTest do
       assert eval({"jose", :<, 1.0}) == {:ok, false}
       assert eval({1.0, :==, "jose"}) == {:ok, false}
     end
+
+    test "atom and string compare as their string forms" do
+      assert eval({:delivery, :==, "delivery"}) == {:ok, true}
+      assert eval({"delivery", :==, :delivery}) == {:ok, true}
+      assert eval({:delivery, :==, "order_ahead"}) == {:ok, false}
+      assert eval({:delivery, :!=, "order_ahead"}) == {:ok, true}
+      assert eval({:delivery, :<>, "delivery"}) == {:ok, false}
+    end
+
+    test "nil / true / false are left alone (Liquid keeps boolean semantics)" do
+      assert eval({true, :==, "true"}) == {:ok, false}
+      assert eval({false, :==, "false"}) == {:ok, false}
+      assert eval({nil, :==, "nil"}) == {:ok, false}
+    end
   end
 end
