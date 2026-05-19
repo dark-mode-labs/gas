@@ -162,8 +162,12 @@ defmodule Gas do
   def render(template_or_text, values, options \\ [])
 
   def render(%Template{parsed_template: parse_tree}, %Context{} = context, options) do
-    matcher_module = Keyword.get(options, :matcher_module, Gas.Matcher)
-    context = %{context | matcher_module: matcher_module}
+    context = %{
+      context
+      | matcher_module: Keyword.get(options, :matcher_module, context.matcher_module),
+        scopes: Keyword.get(options, :scopes, context.scopes),
+        strict_variables: Keyword.get(options, :strict_variables, context.strict_variables)
+    }
 
     {result, context} = render(parse_tree, context, options)
 
@@ -181,21 +185,20 @@ defmodule Gas do
   end
 
   def render(text, %Context{} = context, options) do
-    {result, context} =
-      Enum.reduce(List.wrap(text), {[], context}, fn entry, {acc, context} ->
-        try do
-          {result, context} = do_render(entry, context, options)
-          {[result | acc], context}
-        catch
-          {:break_exp, result, context} ->
-            throw({:break_exp, Enum.reverse([result | acc]), context})
+    render_list(List.wrap(text), context, options, [])
+  end
 
-          {:continue_exp, result, context} ->
-            throw({:continue_exp, Enum.reverse([result | acc]), context})
-        end
-      end)
+  defp render_list([], context, _options, acc), do: {Enum.reverse(acc), context}
 
-    {Enum.reverse(result), context}
+  defp render_list([entry | rest], context, options, acc) do
+    {result, context} = do_render(entry, context, options)
+    render_list(rest, context, options, [result | acc])
+  catch
+    {:break_exp, result, context} ->
+      throw({:break_exp, Enum.reverse([result | acc]), context})
+
+    {:continue_exp, result, context} ->
+      throw({:continue_exp, Enum.reverse([result | acc]), context})
   end
 
   # Inline the two most common renderables to skip protocol dispatch.
@@ -216,19 +219,18 @@ defmodule Gas do
     {iolist, context}
   end
 
-  defp process_result(result, context, options) do
-    if strict_errors?(context.errors, options) do
+  defp process_result(result, context, _options) do
+    if strict_errors?(context) do
       {:error, Enum.reverse(context.errors), result}
     else
       {:ok, result, Enum.reverse(context.errors)}
     end
   end
 
-  defp strict_errors?(errors, options) do
+  defp strict_errors?(%Context{errors: errors, strict_variables: strict_variables}) do
     {variable_errors, filter_errors} =
       Enum.split_with(errors, &match?(%Gas.UndefinedVariableError{}, &1))
 
-    (options[:strict_variables] == true && variable_errors != []) ||
-      filter_errors != []
+    (strict_variables == true && variable_errors != []) || filter_errors != []
   end
 end

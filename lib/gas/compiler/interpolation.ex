@@ -8,7 +8,7 @@ defmodule Gas.Compiler.Interpolation do
       `Gas.InterpolatedString{}` sentinels carrying their parsed AST.
   """
 
-  alias Gas.{InterpolatedString, Literal, Template, Text}
+  alias Gas.{InterpolatedString, Literal, Template, Text, Variable}
 
   @spec expand(Template.t(), keyword) :: Template.t()
   def expand(%Template{parsed_template: tree} = template, opts) do
@@ -21,6 +21,19 @@ defmodule Gas.Compiler.Interpolation do
     case parse_if_interpolated(value, opts) do
       nil -> lit
       template -> %{lit | interp_ast: template}
+    end
+  end
+
+  defp walk_tree(%Variable{} = var, opts) do
+    walked =
+      var
+      |> Map.from_struct()
+      |> Enum.map(fn {k, v} -> {k, walk_tree(v, opts)} end)
+      |> then(&struct(Variable, &1))
+
+    case Variable.static_keys(walked) do
+      nil -> walked
+      keys -> %{walked | static_keys: keys}
     end
   end
 
@@ -63,14 +76,19 @@ defmodule Gas.Compiler.Interpolation do
 
   defp parse_if_interpolated(value, opts) do
     if String.contains?(value, "{{") or String.contains?(value, "{%") do
-      case Gas.parse(value, opts) do
-        {:ok, %Template{parsed_template: tree} = template} ->
-          if text_only?(tree), do: nil, else: template
-
-        {:error, _} ->
-          nil
-      end
+      parse_value(value, opts)
     end
+  end
+
+  defp parse_value(value, opts) do
+    case Gas.parse(value, opts) do
+      {:ok, %Template{parsed_template: tree} = template} -> if_interpolated(tree, template)
+      {:error, _} -> nil
+    end
+  end
+
+  defp if_interpolated(tree, template) do
+    if text_only?(tree), do: nil, else: template
   end
 
   defp text_only?([]), do: true

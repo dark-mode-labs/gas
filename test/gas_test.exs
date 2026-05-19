@@ -202,6 +202,72 @@ defmodule GasTest do
     end
   end
 
+  describe "render/3 options to context" do
+    test "scopes from opts narrows variable resolution" do
+      template = Gas.parse!("{{ x }}")
+
+      context = %Gas.Context{
+        vars: %{"x" => "from_vars"},
+        counter_vars: %{"x" => "from_counter"}
+      }
+
+      {:ok, vars_result, _} = Gas.render(template, context, scopes: [:vars])
+      assert IO.iodata_to_binary(vars_result) == "from_vars"
+
+      {:ok, counter_result, _} = Gas.render(template, context, scopes: [:counter_vars])
+      assert IO.iodata_to_binary(counter_result) == "from_counter"
+    end
+
+    test "scopes set on the Context are honored when opts omits scopes" do
+      template = Gas.parse!("{{ x }}")
+
+      context = %Gas.Context{
+        vars: %{"x" => "from_vars"},
+        counter_vars: %{"x" => "from_counter"},
+        scopes: [:counter_vars]
+      }
+
+      {:ok, result, _} = Gas.render(template, context, [])
+      assert IO.iodata_to_binary(result) == "from_counter"
+    end
+
+    test "strict_variables on the Context fires UndefinedVariableError" do
+      template = Gas.parse!("{{ missing }}")
+
+      context = %Gas.Context{vars: %{}, strict_variables: true}
+
+      {:error, errors, _partial} = Gas.render(template, context, [])
+
+      assert [%Gas.UndefinedVariableError{variable: ["missing"]}] = errors
+    end
+  end
+
+  describe "Argument.get fast paths" do
+    @loc %Gas.Parser.Loc{line: 1, column: 1}
+
+    test "literal with no filters returns value without dispatching do_get/4" do
+      arg = %Gas.Literal{loc: @loc, value: "hello"}
+      context = %Gas.Context{}
+      assert Gas.Argument.get(arg, context, []) == {:ok, "hello", context}
+    end
+
+    test "literal with filters still resolves through apply_filters" do
+      arg = %Gas.Literal{loc: @loc, value: nil}
+
+      filters = [
+        %Gas.Filter{
+          loc: @loc,
+          function: "default",
+          positional_arguments: [%Gas.Literal{loc: @loc, value: "fallback"}],
+          named_arguments: %{}
+        }
+      ]
+
+      {:ok, value, _ctx} = Gas.Argument.get(arg, %Gas.Context{}, filters)
+      assert value == "fallback"
+    end
+  end
+
   describe "strict_variables" do
     test "object rendering" do
       template = "a{{ var1 }} {{ var2 }}b"

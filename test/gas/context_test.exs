@@ -112,6 +112,76 @@ defmodule Gas.ContextTest do
     end
   end
 
+  describe "get_in/3 with pre-flattened static_keys" do
+    test "fast path resolves a value through the static key list" do
+      var = %Variable{
+        original_name: "x.a.b",
+        loc: @loc,
+        identifier: "x",
+        accesses: [
+          %AccessLiteral{loc: @loc, value: "a"},
+          %AccessLiteral{loc: @loc, value: "b"}
+        ],
+        static_keys: ["x", "a", "b"]
+      }
+
+      context = %Context{vars: %{"x" => %{"a" => %{"b" => "leaf"}}}}
+      assert Context.get_in(context, var, [:vars]) == {:ok, "leaf", context}
+    end
+
+    test "fast path returns not_found when path is missing" do
+      var = %Variable{
+        original_name: "x.a.b",
+        loc: @loc,
+        identifier: "x",
+        accesses: [
+          %AccessLiteral{loc: @loc, value: "a"},
+          %AccessLiteral{loc: @loc, value: "b"}
+        ],
+        static_keys: ["x", "a", "b"]
+      }
+
+      context = %Context{vars: %{"x" => %{"a" => %{}}}}
+
+      assert Context.get_in(context, var, [:vars]) ==
+               {:error, {:not_found, ["x", "a", "b"]}, context}
+    end
+
+    test "fast path uses scope precedence (iteration_vars > vars)" do
+      var = %Variable{
+        original_name: "x.a",
+        loc: @loc,
+        identifier: "x",
+        accesses: [%AccessLiteral{loc: @loc, value: "a"}],
+        static_keys: ["x", "a"]
+      }
+
+      context = %Context{
+        iteration_vars: %{"x" => %{"a" => "iter"}},
+        vars: %{"x" => %{"a" => "vars"}}
+      }
+
+      assert Context.get_in(context, var, [:iteration_vars, :vars]) == {:ok, "iter", context}
+    end
+
+    test "fast path falls back to vars when iteration_vars path doesn't resolve" do
+      var = %Variable{
+        original_name: "x.a",
+        loc: @loc,
+        identifier: "x",
+        accesses: [%AccessLiteral{loc: @loc, value: "a"}],
+        static_keys: ["x", "a"]
+      }
+
+      context = %Context{
+        iteration_vars: %{"x" => %{}},
+        vars: %{"x" => %{"a" => "vars"}}
+      }
+
+      assert Context.get_in(context, var, [:iteration_vars, :vars]) == {:ok, "vars", context}
+    end
+  end
+
   defmodule CustomMatcher do
     def match(_, _), do: {:ok, 42}
   end

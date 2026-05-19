@@ -169,30 +169,43 @@ defmodule Gas.Argument do
   defp stringify_iolist!(value), do: to_string(value)
 
   @spec get(t, Context.t(), [Filter.t()], Keyword.t()) :: {:ok, term, Context.t()}
-  def get(arg, context, filters, opts \\ []) do
-    scopes = Keyword.get(opts, :scopes, [:iteration_vars, :vars, :counter_vars])
-    strict_variables = Keyword.get(opts, :strict_variables, false)
+  def get(arg, context, filters, opts \\ [])
 
-    case do_get(arg, context, scopes, opts) do
+  def get(%Literal{value: value, interp_ast: nil}, context, [], _opts),
+    do: {:ok, value, context}
+
+  def get(arg, context, [], opts) do
+    case do_get(arg, context, context.scopes, opts) do
+      {:ok, value, context} ->
+        {:ok, value, context}
+
+      {:error, {:not_found, key}, context} ->
+        context = maybe_put_undefined(context, key, arg)
+        {:ok, nil, context}
+    end
+  end
+
+  def get(arg, context, filters, opts) do
+    case do_get(arg, context, context.scopes, opts) do
       {:ok, value, context} ->
         {value, context} = apply_filters(value, filters, context, opts)
         {:ok, value, context}
 
       {:error, {:not_found, key}, context} ->
-        context =
-          if strict_variables do
-            Context.put_errors(context, %UndefinedVariableError{
-              variable: key,
-              original_name: arg.original_name,
-              loc: arg.loc
-            })
-          else
-            context
-          end
-
+        context = maybe_put_undefined(context, key, arg)
         {value, context} = apply_filters(nil, filters, context, opts)
         {:ok, value, context}
     end
+  end
+
+  defp maybe_put_undefined(%Context{strict_variables: false} = context, _key, _arg), do: context
+
+  defp maybe_put_undefined(context, key, arg) do
+    Context.put_errors(context, %UndefinedVariableError{
+      variable: key,
+      original_name: arg.original_name,
+      loc: arg.loc
+    })
   end
 
   defp do_get(%Literal{interp_ast: %Gas.Template{parsed_template: tree}}, context, _scopes, opts) do

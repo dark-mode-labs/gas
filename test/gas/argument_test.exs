@@ -294,8 +294,8 @@ defmodule Gas.ArgumentTest do
     test "array access not found with strict_variables" do
       accesses = [%AccessLiteral{loc: @loc, value: 1}]
       arg = %Variable{original_name: "key[1]", loc: @loc, identifier: "key", accesses: accesses}
-      context = %Gas.Context{vars: %{"key" => "a string"}}
-      assert {:ok, nil, context} = Argument.get(arg, context, [], strict_variables: true)
+      context = %Gas.Context{vars: %{"key" => "a string"}, strict_variables: true}
+      assert {:ok, nil, context} = Argument.get(arg, context, [])
 
       assert context.errors == [
                %UndefinedVariableError{variable: ["key", 1], original_name: "key[1]", loc: @loc}
@@ -374,10 +374,10 @@ defmodule Gas.ArgumentTest do
         }
       ]
 
-      context = %Gas.Context{vars: %{}}
+      context = %Gas.Context{vars: %{}, strict_variables: true}
 
       assert {:ok, 456, context} =
-               Argument.get(arg, context, filters, strict_variables: true)
+               Argument.get(arg, context, filters)
 
       assert context.errors == [
                %UndefinedVariableError{variable: ["key"], original_name: "key", loc: @loc}
@@ -433,7 +433,7 @@ defmodule Gas.ArgumentTest do
     end
 
     test "missing arg and filter with strict_variables" do
-      context = %Gas.Context{vars: %{}}
+      context = %Gas.Context{vars: %{}, strict_variables: true}
       arg = %Variable{original_name: "key", loc: @loc, identifier: "key", accesses: []}
 
       filters = [
@@ -446,7 +446,7 @@ defmodule Gas.ArgumentTest do
       ]
 
       assert {:ok, _partial, context} =
-               Argument.get(arg, context, filters, strict_variables: true)
+               Argument.get(arg, context, filters)
 
       assert context.errors == [
                %Gas.UndefinedFilterError{filter: "unknown", loc: @loc},
