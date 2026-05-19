@@ -115,8 +115,10 @@ defmodule Gas do
          {:ok, text} <- file_system.read_template_file(template, instance),
          {:ok, parse_tree} <- parse(text, options),
          expanded <- Gas.Compiler.Interpolation.expand(parse_tree, options),
-         :ok <- cache_module.put(template, expanded) do
-      {:ok, expanded}
+         folded <- Gas.Compiler.ConstantFold.run(expanded),
+         merged <- Gas.Compiler.TextMerge.run(folded),
+         :ok <- cache_module.put(template, merged) do
+      {:ok, merged}
     else
       {:ok, %Gas.Template{} = parsed_template} -> {:ok, parsed_template}
       other -> other
