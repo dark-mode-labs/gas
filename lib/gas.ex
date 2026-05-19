@@ -211,7 +211,11 @@ defmodule Gas do
     {result, context}
   end
 
-  defp do_render(%AssignTag{argument: target, object: %Object{argument: arg, filters: filters}}, context, options) do
+  defp do_render(
+         %AssignTag{argument: target, object: %Object{argument: arg, filters: filters}},
+         context,
+         options
+       ) do
     {:ok, value, context} = Argument.get(arg, context, filters, options)
     {[], %{context | vars: Map.put(context.vars, to_string(target), value)}}
   end
