@@ -52,4 +52,20 @@ defmodule Gas.Compiler.TextMergeTest do
   test "returns an empty list unchanged" do
     assert TextMerge.run(template([])).parsed_template == []
   end
+
+  test "recurses into case/when body tuples and merges adjacent Text in branches" do
+    {:ok, parsed} = Gas.parse("{% case x %}{% when 'hit' %}aa{% endcase %}")
+    %Gas.Tags.CaseTag{cases: cases_before} = hd(parsed.parsed_template)
+    {_when, body_before} = hd(cases_before)
+
+    merged = TextMerge.run(parsed)
+    %Gas.Tags.CaseTag{cases: cases_after} = hd(merged.parsed_template)
+    {_when, body_after} = hd(cases_after)
+
+    # The shape and content of the body should be preserved through the
+    # tuple-walker. (Even if the body had only one Text to start with,
+    # the walker must not drop the tuple.)
+    assert length(body_after) <= length(body_before)
+    assert IO.iodata_to_binary(Enum.map(body_after, &(&1.text))) == "aa"
+  end
 end

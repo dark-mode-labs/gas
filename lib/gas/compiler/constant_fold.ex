@@ -31,6 +31,13 @@ defmodule Gas.Compiler.ConstantFold do
     Map.new(map, fn {k, v} -> {k, walk(v)} end)
   end
 
+  defp walk(tuple) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&walk/1)
+    |> List.to_tuple()
+  end
+
   defp walk(other), do: other
 
   defp fold_node(%IfTag{condition: condition, body: body, else_body: else_body, elsifs: []} = tag) do

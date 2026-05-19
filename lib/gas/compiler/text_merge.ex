@@ -31,6 +31,13 @@ defmodule Gas.Compiler.TextMerge do
     Map.new(map, fn {k, v} -> {k, walk(v)} end)
   end
 
+  defp walk(tuple) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&walk/1)
+    |> List.to_tuple()
+  end
+
   defp walk(other), do: other
 
   defp collapse([], acc), do: Enum.reverse(acc)
