@@ -4,7 +4,8 @@ defmodule Gas do
   Gas expands on the Solid foundation and focuses primarily on having full parity with the Liquid convention and specification.
   """
 
-  alias Gas.{Context, Object, Parser, Text}
+  alias Gas.{Argument, Context, Object, Parser, Text}
+  alias Gas.Tags.AssignTag
 
   @type errors :: [error]
   @type error ::
@@ -203,12 +204,16 @@ defmodule Gas do
       throw({:continue_exp, Enum.reverse([result | acc]), context})
   end
 
-  # Inline the two most common renderables to skip protocol dispatch.
   defp do_render(%Text{text: text}, context, _options), do: {text, context}
 
   defp do_render(%Object{argument: arg, filters: filters}, context, options) do
-    {:ok, result, context} = Gas.Argument.render(arg, context, filters, options)
+    {:ok, result, context} = Argument.render(arg, context, filters, options)
     {result, context}
+  end
+
+  defp do_render(%AssignTag{argument: target, object: %Object{argument: arg, filters: filters}}, context, options) do
+    {:ok, value, context} = Argument.get(arg, context, filters, options)
+    {[], %{context | vars: Map.put(context.vars, to_string(target), value)}}
   end
 
   defp do_render(tag, context, options) when is_struct(tag) do

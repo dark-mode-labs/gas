@@ -242,6 +242,29 @@ defmodule GasTest do
     end
   end
 
+  describe "do_render AssignTag inline" do
+    test "assigns the resolved value to vars and returns empty iolist" do
+      template = Gas.parse!("{% assign x = 1 %}{{ x }}")
+
+      assert {:ok, result, _errors} = Gas.render(template, %{})
+      assert IO.iodata_to_binary(result) == "1"
+    end
+
+    test "assign with filter on the right-hand side" do
+      template = Gas.parse!("{% assign x = name | upcase %}{{ x }}")
+
+      assert {:ok, result, _errors} = Gas.render(template, %{"name" => "bob"})
+      assert IO.iodata_to_binary(result) == "BOB"
+    end
+
+    test "assign overrides prior value" do
+      template = Gas.parse!("{% assign x = 1 %}{% assign x = 2 %}{{ x }}")
+
+      assert {:ok, result, _errors} = Gas.render(template, %{})
+      assert IO.iodata_to_binary(result) == "2"
+    end
+  end
+
   describe "Argument.get fast paths" do
     @loc %Gas.Parser.Loc{line: 1, column: 1}
 
