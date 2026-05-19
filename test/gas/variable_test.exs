@@ -3,6 +3,8 @@ defmodule Gas.VariableTest do
   alias Gas.Variable
   alias Gas.Parser.Loc
 
+  @loc %Loc{line: 1, column: 1}
+
   defp parse(template) do
     context = %Gas.ParserContext{rest: "{{#{template}}}", line: 1, column: 1, mode: :normal}
     {:ok, tokens, _context} = Gas.Lexer.tokenize_object(context)
@@ -36,6 +38,65 @@ defmodule Gas.VariableTest do
       }
 
       assert to_string(var) == "var1[var2[\"var3\"]][\"var4\"]"
+    end
+  end
+
+  describe "static_keys/1" do
+    test "returns nil for empty accesses" do
+      var = %Variable{loc: @loc, identifier: "x", accesses: [], original_name: "x"}
+      assert Variable.static_keys(var) == nil
+    end
+
+    test "returns [identifier | values] when all accesses are AccessLiteral" do
+      accesses = [
+        %Gas.AccessLiteral{loc: @loc, value: "a"},
+        %Gas.AccessLiteral{loc: @loc, value: "b"}
+      ]
+
+      var = %Variable{loc: @loc, identifier: "x", accesses: accesses, original_name: "x.a.b"}
+      assert Variable.static_keys(var) == ["x", "a", "b"]
+    end
+
+    test "preserves integer access values" do
+      accesses = [%Gas.AccessLiteral{loc: @loc, value: 0}]
+      var = %Variable{loc: @loc, identifier: "x", accesses: accesses, original_name: "x[0]"}
+      assert Variable.static_keys(var) == ["x", 0]
+    end
+
+    test "returns nil when any access is AccessVariable" do
+      access_var = %Variable{loc: @loc, identifier: "i", accesses: [], original_name: "i"}
+
+      accesses = [
+        %Gas.AccessLiteral{loc: @loc, value: "a"},
+        %Gas.AccessVariable{loc: @loc, variable: access_var}
+      ]
+
+      var = %Variable{loc: @loc, identifier: "x", accesses: accesses, original_name: "x.a[i]"}
+      assert Variable.static_keys(var) == nil
+    end
+
+    test "omits identifier when nil (bracket-only access like [foo])" do
+      accesses = [%Gas.AccessLiteral{loc: @loc, value: "foo"}]
+      var = %Variable{loc: @loc, identifier: nil, accesses: accesses, original_name: "[foo]"}
+      assert Variable.static_keys(var) == ["foo"]
+    end
+  end
+
+  describe "compile-time static_keys population" do
+    test "Gas.Compiler.Interpolation.expand walks the parse_tree and sets static_keys" do
+      {:ok, parsed} = Gas.parse("{{ x.a.b }}")
+      expanded = Gas.Compiler.Interpolation.expand(parsed, [])
+
+      [%Gas.Object{argument: %Variable{} = var}] = expanded.parsed_template
+      assert var.static_keys == ["x", "a", "b"]
+    end
+
+    test "Compiler.Interpolation.expand leaves dynamic-access variables alone" do
+      {:ok, parsed} = Gas.parse("{{ x[i] }}")
+      expanded = Gas.Compiler.Interpolation.expand(parsed, [])
+
+      [%Gas.Object{argument: %Variable{} = var}] = expanded.parsed_template
+      assert var.static_keys == nil
     end
   end
 

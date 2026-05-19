@@ -202,6 +202,150 @@ defmodule GasTest do
     end
   end
 
+  describe "render/3 options to context" do
+    test "scopes from opts narrows variable resolution" do
+      template = Gas.parse!("{{ x }}")
+
+      context = %Gas.Context{
+        vars: %{"x" => "from_vars"},
+        counter_vars: %{"x" => "from_counter"}
+      }
+
+      {:ok, vars_result, _} = Gas.render(template, context, scopes: [:vars])
+      assert IO.iodata_to_binary(vars_result) == "from_vars"
+
+      {:ok, counter_result, _} = Gas.render(template, context, scopes: [:counter_vars])
+      assert IO.iodata_to_binary(counter_result) == "from_counter"
+    end
+
+    test "scopes set on the Context are honored when opts omits scopes" do
+      template = Gas.parse!("{{ x }}")
+
+      context = %Gas.Context{
+        vars: %{"x" => "from_vars"},
+        counter_vars: %{"x" => "from_counter"},
+        scopes: [:counter_vars]
+      }
+
+      {:ok, result, _} = Gas.render(template, context, [])
+      assert IO.iodata_to_binary(result) == "from_counter"
+    end
+
+    test "strict_variables on the Context fires UndefinedVariableError" do
+      template = Gas.parse!("{{ missing }}")
+
+      context = %Gas.Context{vars: %{}, strict_variables: true}
+
+      {:error, errors, _partial} = Gas.render(template, context, [])
+
+      assert [%Gas.UndefinedVariableError{variable: ["missing"]}] = errors
+    end
+  end
+
+  describe "break/continue propagation through nested render() calls" do
+    test "continue inside for-loop body does not duplicate accumulated output" do
+      template =
+        Gas.parse!("""
+        {% for i in (1..5) %}
+          {% if i == 4 %}x{% continue %}{% else %}{{ i }}{% endif %}
+        {% endfor %}
+        after
+        """)
+
+      {:ok, result, _errors} = Gas.render(template, %{})
+      output = IO.iodata_to_binary(result)
+
+      # Each digit appears exactly once
+      assert String.split(output, "1", trim: false) |> length() == 2
+      assert String.split(output, "2", trim: false) |> length() == 2
+      assert String.split(output, "5", trim: false) |> length() == 2
+      assert String.contains?(output, "after")
+    end
+
+    test "continue outside any for-loop terminates render with accumulated output" do
+      template =
+        Gas.parse!("""
+        before
+        {% continue %}
+        after
+        """)
+
+      {:ok, result, _errors} = Gas.render(template, %{})
+      output = IO.iodata_to_binary(result)
+
+      assert String.contains?(output, "before")
+      refute String.contains?(output, "after")
+    end
+
+    test "for-loop completes fully, then continue after endfor terminates render" do
+      template =
+        Gas.parse!("""
+        {% for i in (1..3) %}{{ i }} {% endfor %}
+        keep
+        {% continue %}
+        drop
+        """)
+
+      {:ok, result, _errors} = Gas.render(template, %{})
+      output = IO.iodata_to_binary(result)
+
+      assert String.contains?(output, "1 2 3")
+      # Loop output appears exactly once
+      assert length(String.split(output, "1 2 3", trim: false)) == 2
+      assert String.contains?(output, "keep")
+      refute String.contains?(output, "drop")
+    end
+  end
+
+  describe "do_render AssignTag inline" do
+    test "assigns the resolved value to vars and returns empty iolist" do
+      template = Gas.parse!("{% assign x = 1 %}{{ x }}")
+
+      assert {:ok, result, _errors} = Gas.render(template, %{})
+      assert IO.iodata_to_binary(result) == "1"
+    end
+
+    test "assign with filter on the right-hand side" do
+      template = Gas.parse!("{% assign x = name | upcase %}{{ x }}")
+
+      assert {:ok, result, _errors} = Gas.render(template, %{"name" => "bob"})
+      assert IO.iodata_to_binary(result) == "BOB"
+    end
+
+    test "assign overrides prior value" do
+      template = Gas.parse!("{% assign x = 1 %}{% assign x = 2 %}{{ x }}")
+
+      assert {:ok, result, _errors} = Gas.render(template, %{})
+      assert IO.iodata_to_binary(result) == "2"
+    end
+  end
+
+  describe "Argument.get fast paths" do
+    @loc %Gas.Parser.Loc{line: 1, column: 1}
+
+    test "literal with no filters returns value without dispatching do_get/4" do
+      arg = %Gas.Literal{loc: @loc, value: "hello"}
+      context = %Gas.Context{}
+      assert Gas.Argument.get(arg, context, []) == {:ok, "hello", context}
+    end
+
+    test "literal with filters still resolves through apply_filters" do
+      arg = %Gas.Literal{loc: @loc, value: nil}
+
+      filters = [
+        %Gas.Filter{
+          loc: @loc,
+          function: "default",
+          positional_arguments: [%Gas.Literal{loc: @loc, value: "fallback"}],
+          named_arguments: %{}
+        }
+      ]
+
+      {:ok, value, _ctx} = Gas.Argument.get(arg, %Gas.Context{}, filters)
+      assert value == "fallback"
+    end
+  end
+
   describe "strict_variables" do
     test "object rendering" do
       template = "a{{ var1 }} {{ var2 }}b"

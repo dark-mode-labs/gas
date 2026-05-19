@@ -4,7 +4,8 @@ defmodule Gas do
   Gas expands on the Solid foundation and focuses primarily on having full parity with the Liquid convention and specification.
   """
 
-  alias Gas.{Context, Object, Parser, Text}
+  alias Gas.{Argument, Context, Object, Parser, Text}
+  alias Gas.Tags.AssignTag
 
   @type errors :: [error]
   @type error ::
@@ -114,8 +115,11 @@ defmodule Gas do
            Keyword.get(options, :file_system, {Gas.PassThroughFileSystem, nil}),
          {:ok, text} <- file_system.read_template_file(template, instance),
          {:ok, parse_tree} <- parse(text, options),
-         :ok <- cache_module.put(template, parse_tree) do
-      {:ok, parse_tree}
+         expanded <- Gas.Compiler.Interpolation.expand(parse_tree, options),
+         folded <- Gas.Compiler.ConstantFold.run(expanded),
+         merged <- Gas.Compiler.TextMerge.run(folded),
+         :ok <- cache_module.put(template, merged) do
+      {:ok, merged}
     else
       {:ok, %Gas.Template{} = parsed_template} -> {:ok, parsed_template}
       other -> other
@@ -161,8 +165,12 @@ defmodule Gas do
   def render(template_or_text, values, options \\ [])
 
   def render(%Template{parsed_template: parse_tree}, %Context{} = context, options) do
-    matcher_module = Keyword.get(options, :matcher_module, Gas.Matcher)
-    context = %{context | matcher_module: matcher_module}
+    context = %{
+      context
+      | matcher_module: Keyword.get(options, :matcher_module, context.matcher_module),
+        scopes: Keyword.get(options, :scopes, context.scopes),
+        strict_variables: Keyword.get(options, :strict_variables, context.strict_variables)
+    }
 
     {result, context} = render(parse_tree, context, options)
 
@@ -180,27 +188,39 @@ defmodule Gas do
   end
 
   def render(text, %Context{} = context, options) do
-    {result, context} =
-      Enum.reduce(List.wrap(text), {[], context}, fn entry, {acc, context} ->
-        try do
-          {result, context} = do_render(entry, context, options)
-          {[result | acc], context}
-        catch
-          {:break_exp, result, context} ->
-            throw({:break_exp, Enum.reverse([result | acc]), context})
-
-          {:continue_exp, result, context} ->
-            throw({:continue_exp, Enum.reverse([result | acc]), context})
-        end
-      end)
-
-    {Enum.reverse(result), context}
+    render_list(List.wrap(text), context, options, [])
+  catch
+    {:gas_loop_signal, kind, result, ctx, acc} ->
+      throw({kind, Enum.reverse([result | acc]), ctx})
   end
 
-  # Optimisation for object and text to avoid extra render calls
-  defp do_render(renderable, context, options)
-       when is_struct(renderable, Text) or is_struct(renderable, Object) do
-    Gas.Renderable.render(renderable, context, options)
+  defp render_list([], context, _options, acc), do: {Enum.reverse(acc), context}
+
+  defp render_list([entry | rest], context, options, acc) do
+    {result, context} = do_render(entry, context, options)
+    render_list(rest, context, options, [result | acc])
+  catch
+    {:break_exp, result, context} ->
+      throw({:gas_loop_signal, :break_exp, result, context, acc})
+
+    {:continue_exp, result, context} ->
+      throw({:gas_loop_signal, :continue_exp, result, context, acc})
+  end
+
+  defp do_render(%Text{text: text}, context, _options), do: {text, context}
+
+  defp do_render(%Object{argument: arg, filters: filters}, context, options) do
+    {:ok, result, context} = Argument.render(arg, context, filters, options)
+    {result, context}
+  end
+
+  defp do_render(
+         %AssignTag{argument: target, object: %Object{argument: arg, filters: filters}},
+         context,
+         options
+       ) do
+    {:ok, value, context} = Argument.get(arg, context, filters, options)
+    {[], %{context | vars: Map.put(context.vars, to_string(target), value)}}
   end
 
   defp do_render(tag, context, options) when is_struct(tag) do
@@ -213,19 +233,18 @@ defmodule Gas do
     {iolist, context}
   end
 
-  defp process_result(result, context, options) do
-    if strict_errors?(context.errors, options) do
+  defp process_result(result, context, _options) do
+    if strict_errors?(context) do
       {:error, Enum.reverse(context.errors), result}
     else
       {:ok, result, Enum.reverse(context.errors)}
     end
   end
 
-  defp strict_errors?(errors, options) do
+  defp strict_errors?(%Context{errors: errors, strict_variables: strict_variables}) do
     {variable_errors, filter_errors} =
       Enum.split_with(errors, &match?(%Gas.UndefinedVariableError{}, &1))
 
-    (options[:strict_variables] == true && variable_errors != []) ||
-      filter_errors != []
+    (strict_variables == true && variable_errors != []) || filter_errors != []
   end
 end

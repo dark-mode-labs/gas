@@ -9,10 +9,14 @@ defmodule Gas.Literal do
   end
 
   @enforce_keys [:loc, :value]
-  defstruct [:loc, :value]
+  defstruct [:loc, :value, interp_ast: nil]
 
   @type value :: boolean | nil | binary | integer | float | %Empty{}
-  @type t :: %__MODULE__{loc: Loc.t(), value: value}
+  @type t :: %__MODULE__{
+          loc: Loc.t(),
+          value: value,
+          interp_ast: nil | Gas.Template.t()
+        }
 
   defimpl String.Chars do
     def to_string(literal), do: inspect(literal.value)

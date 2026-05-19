@@ -5,10 +5,15 @@ defmodule Gas.Variable do
   alias Gas.Literal
 
   @enforce_keys [:loc, :identifier, :accesses, :original_name]
-  defstruct [:loc, :identifier, :accesses, :original_name]
+  defstruct [:loc, :identifier, :accesses, :original_name, static_keys: nil]
 
   @type accesses :: [AccessVariable | AccessLiteral]
-  @type t :: %__MODULE__{loc: Gas.Parser.Loc.t(), identifier: binary | nil, accesses: accesses}
+  @type t :: %__MODULE__{
+          loc: Gas.Parser.Loc.t(),
+          identifier: binary | nil,
+          accesses: accesses,
+          static_keys: nil | [binary | integer]
+        }
 
   defimpl String.Chars do
     def to_string(variable), do: variable.original_name
@@ -121,4 +126,20 @@ defmodule Gas.Variable do
   defp access(tokens, accesses, original_name) do
     {:ok, tokens, Enum.reverse(accesses), Enum.reverse(original_name)}
   end
+
+  @doc false
+  def static_keys(%__MODULE__{identifier: identifier, accesses: accesses}) do
+    case all_literal_values(accesses, []) do
+      {:ok, []} -> nil
+      {:ok, values} -> if identifier, do: [identifier | values], else: values
+      :error -> nil
+    end
+  end
+
+  defp all_literal_values([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp all_literal_values([%AccessLiteral{value: v} | rest], acc),
+    do: all_literal_values(rest, [v | acc])
+
+  defp all_literal_values(_, _), do: :error
 end

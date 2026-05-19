@@ -4,13 +4,17 @@ defmodule Gas.Context do
   """
   alias Gas.{AccessLiteral, AccessVariable, Argument, Literal, Variable}
 
+  @default_scopes [:iteration_vars, :vars, :counter_vars]
+
   defstruct vars: %{},
             counter_vars: %{},
             iteration_vars: %{},
             cycle_state: %{},
             registers: %{},
             errors: [],
-            matcher_module: Gas.Matcher
+            matcher_module: Gas.Matcher,
+            scopes: @default_scopes,
+            strict_variables: false
 
   @type t :: %__MODULE__{
           vars: map,
@@ -19,9 +23,13 @@ defmodule Gas.Context do
           cycle_state: map,
           registers: map,
           errors: Gas.errors(),
-          matcher_module: module
+          matcher_module: module,
+          scopes: [scope],
+          strict_variables: boolean
         }
   @type scope :: :counter_vars | :vars | :iteration_vars
+
+  def default_scopes, do: @default_scopes
 
   def put_errors(context, errors) when is_list(errors) do
     %{context | errors: errors ++ context.errors}
@@ -38,7 +46,14 @@ defmodule Gas.Context do
   """
   @spec get_in(t, Variable.t(), [scope], keyword) ::
           {:ok, term, t} | {:error, {:not_found, [term()]}, t}
-  def get_in(context, variable, scopes, opts \\ []) do
+  def get_in(context, variable, scopes, opts \\ [])
+
+  def get_in(context, %Variable{static_keys: keys}, scopes, _opts) when is_list(keys) do
+    result = get_from_scope(context, scopes, keys)
+    Tuple.insert_at(result, 2, context)
+  end
+
+  def get_in(context, variable, scopes, opts) do
     {keys, context} =
       Enum.reduce(variable.accesses, {[], context}, fn access, {keys, context} ->
         case access do
@@ -140,15 +155,28 @@ defmodule Gas.Context do
     end)
   end
 
-  defp get_from_scope(context, :vars, variable) do
-    context.matcher_module.match(context.vars, variable)
+  defp get_from_scope(context, :vars, variable),
+    do: match_scope(context.vars, variable, context.matcher_module)
+
+  defp get_from_scope(context, :counter_vars, variable),
+    do: match_scope(context.counter_vars, variable, context.matcher_module)
+
+  defp get_from_scope(context, :iteration_vars, variable),
+    do: match_scope(context.iteration_vars, variable, context.matcher_module)
+
+  defp match_scope(data, [], _matcher), do: {:ok, data}
+
+  defp match_scope(data, [key | rest], matcher) when is_map(data) and not is_struct(data) do
+    case Map.fetch(data, key) do
+      {:ok, value} -> matcher.match(value, rest)
+      :error -> match_scope_special(data, key, rest, matcher)
+    end
   end
 
-  defp get_from_scope(context, :counter_vars, variable) do
-    context.matcher_module.match(context.counter_vars, variable)
-  end
+  defp match_scope(data, keys, matcher), do: matcher.match(data, keys)
 
-  defp get_from_scope(context, :iteration_vars, variable) do
-    context.matcher_module.match(context.iteration_vars, variable)
-  end
+  defp match_scope_special(data, "size", rest, matcher),
+    do: matcher.match(map_size(data), rest)
+
+  defp match_scope_special(_data, _key, _rest, _matcher), do: {:error, :not_found}
 end
