@@ -189,6 +189,9 @@ defmodule Gas do
 
   def render(text, %Context{} = context, options) do
     render_list(List.wrap(text), context, options, [])
+  catch
+    {:gas_loop_signal, kind, result, ctx, acc} ->
+      throw({kind, Enum.reverse([result | acc]), ctx})
   end
 
   defp render_list([], context, _options, acc), do: {Enum.reverse(acc), context}
@@ -198,10 +201,10 @@ defmodule Gas do
     render_list(rest, context, options, [result | acc])
   catch
     {:break_exp, result, context} ->
-      throw({:break_exp, Enum.reverse([result | acc]), context})
+      throw({:gas_loop_signal, :break_exp, result, context, acc})
 
     {:continue_exp, result, context} ->
-      throw({:continue_exp, Enum.reverse([result | acc]), context})
+      throw({:gas_loop_signal, :continue_exp, result, context, acc})
   end
 
   defp do_render(%Text{text: text}, context, _options), do: {text, context}

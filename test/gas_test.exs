@@ -242,6 +242,61 @@ defmodule GasTest do
     end
   end
 
+  describe "break/continue propagation through nested render() calls" do
+    test "continue inside for-loop body does not duplicate accumulated output" do
+      template =
+        Gas.parse!("""
+        {% for i in (1..5) %}
+          {% if i == 4 %}x{% continue %}{% else %}{{ i }}{% endif %}
+        {% endfor %}
+        after
+        """)
+
+      {:ok, result, _errors} = Gas.render(template, %{})
+      output = IO.iodata_to_binary(result)
+
+      # Each digit appears exactly once
+      assert String.split(output, "1", trim: false) |> length() == 2
+      assert String.split(output, "2", trim: false) |> length() == 2
+      assert String.split(output, "5", trim: false) |> length() == 2
+      assert String.contains?(output, "after")
+    end
+
+    test "continue outside any for-loop terminates render with accumulated output" do
+      template =
+        Gas.parse!("""
+        before
+        {% continue %}
+        after
+        """)
+
+      {:ok, result, _errors} = Gas.render(template, %{})
+      output = IO.iodata_to_binary(result)
+
+      assert String.contains?(output, "before")
+      refute String.contains?(output, "after")
+    end
+
+    test "for-loop completes fully, then continue after endfor terminates render" do
+      template =
+        Gas.parse!("""
+        {% for i in (1..3) %}{{ i }} {% endfor %}
+        keep
+        {% continue %}
+        drop
+        """)
+
+      {:ok, result, _errors} = Gas.render(template, %{})
+      output = IO.iodata_to_binary(result)
+
+      assert String.contains?(output, "1 2 3")
+      # Loop output appears exactly once
+      assert length(String.split(output, "1 2 3", trim: false)) == 2
+      assert String.contains?(output, "keep")
+      refute String.contains?(output, "drop")
+    end
+  end
+
   describe "do_render AssignTag inline" do
     test "assigns the resolved value to vars and returns empty iolist" do
       template = Gas.parse!("{% assign x = 1 %}{{ x }}")
