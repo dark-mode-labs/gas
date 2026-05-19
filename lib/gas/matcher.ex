@@ -57,17 +57,25 @@ defimpl Gas.Matcher, for: Map do
 
   def match(data, [key | keys]) do
     case Map.fetch(data, key) do
-      {:ok, value} ->
-        @protocol.match(value, keys)
-
-      _ ->
-        # Check if the key is a special case
-        case key do
-          "size" -> @protocol.match(map_size(data), keys)
-          _ -> {:error, :not_found}
-        end
+      {:ok, value} -> recurse(value, keys)
+      :error -> special(data, key, keys)
     end
   end
+
+  # Recurse without protocol dispatch when nested values are plain maps.
+  defp recurse(value, []), do: {:ok, value}
+
+  defp recurse(value, [key | keys]) when is_map(value) and not is_struct(value) do
+    case Map.fetch(value, key) do
+      {:ok, v} -> recurse(v, keys)
+      :error -> special(value, key, keys)
+    end
+  end
+
+  defp recurse(value, keys), do: @protocol.match(value, keys)
+
+  defp special(data, "size", keys), do: recurse(map_size(data), keys)
+  defp special(_data, _key, _keys), do: {:error, :not_found}
 end
 
 defimpl Gas.Matcher, for: BitString do

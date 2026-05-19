@@ -175,7 +175,6 @@ defmodule Gas.Argument do
 
     case do_get(arg, context, scopes, opts) do
       {:ok, value, context} ->
-        {value, context} = maybe_apply_interpolation(value, context, opts)
         {value, context} = apply_filters(value, filters, context, opts)
         {:ok, value, context}
 
@@ -196,10 +195,23 @@ defmodule Gas.Argument do
     end
   end
 
+  defp do_get(%Literal{interp_ast: %Gas.Template{parsed_template: tree}}, context, _scopes, opts) do
+    {iolist, context} = Gas.render(tree, context, opts)
+    {:ok, IO.iodata_to_binary(iolist), context}
+  end
+
   defp do_get(%Literal{value: value}, context, _scopes, _options), do: {:ok, value, context}
 
-  defp do_get(%Variable{} = variable, context, scopes, options),
-    do: Context.get_in(context, variable, scopes, options)
+  defp do_get(%Variable{} = variable, context, scopes, options) do
+    case Context.get_in(context, variable, scopes, options) do
+      {:ok, %Gas.InterpolatedString{ast: %Gas.Template{parsed_template: tree}}, context} ->
+        {iolist, context} = Gas.render(tree, context, options)
+        {:ok, IO.iodata_to_binary(iolist), context}
+
+      other ->
+        other
+    end
+  end
 
   defp do_get(%Gas.Range{} = range, context, _scopes, options) do
     {:ok, start, context} = get(range.start, context, [], options)
@@ -218,27 +230,6 @@ defmodule Gas.Argument do
       end
 
     {:ok, start..finish//1, context}
-  end
-
-  defp maybe_apply_interpolation(input, context, opts) when is_bitstring(input) do
-    if String.contains?(input, "{{") and String.contains?(input, "}}") do
-      with {:ok, parsed} <- Gas.parse(input, opts),
-           {:ok, rendered_text, errors} <- Gas.render(parsed, context, opts) do
-        {IO.iodata_to_binary(rendered_text), Context.put_errors(context, Enum.reverse(errors))}
-      else
-        {:error, %Gas.TemplateError{} = error} ->
-          {input, Context.put_errors(context, error)}
-
-        {:error, errors, rendered_text} ->
-          {IO.iodata_to_binary(rendered_text), Context.put_errors(context, Enum.reverse(errors))}
-      end
-    else
-      {input, context}
-    end
-  end
-
-  defp maybe_apply_interpolation(input, context, _opts) do
-    {input, context}
   end
 
   defp apply_filters(input, nil, context, _opts), do: {input, context}

@@ -332,11 +332,17 @@ defmodule Gas.Tags.RenderTagTest do
 
     test "interpolation within interpolation" do
       template = ~s<{% render "dotted_arg", arg.sub-arg: var1, arg2: var2 %}>
-      context = %Gas.Context{vars: %{"var1" => "mickey", "var2" => "<h1>{{ var1 }} mouse</h1>"}}
+      options = [file_system: {TestFileSystem, nil}]
+
+      context = %Gas.Context{
+        vars:
+          Gas.Compiler.Interpolation.normalize_vars(
+            %{"var1" => "mickey", "var2" => "<h1>{{ var1 }} mouse</h1>"},
+            options
+          )
+      }
 
       {:ok, tag, _rest} = parse(template)
-
-      options = [file_system: {TestFileSystem, nil}]
 
       assert Gas.Renderable.render(tag, context, options) ==
                {[["mickey", " ", "<h1>mickey mouse</h1>"]], context}

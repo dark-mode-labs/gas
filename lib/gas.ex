@@ -114,8 +114,9 @@ defmodule Gas do
            Keyword.get(options, :file_system, {Gas.PassThroughFileSystem, nil}),
          {:ok, text} <- file_system.read_template_file(template, instance),
          {:ok, parse_tree} <- parse(text, options),
-         :ok <- cache_module.put(template, parse_tree) do
-      {:ok, parse_tree}
+         expanded <- Gas.Compiler.Interpolation.expand(parse_tree, options),
+         :ok <- cache_module.put(template, expanded) do
+      {:ok, expanded}
     else
       {:ok, %Gas.Template{} = parsed_template} -> {:ok, parsed_template}
       other -> other
@@ -197,10 +198,12 @@ defmodule Gas do
     {Enum.reverse(result), context}
   end
 
-  # Optimisation for object and text to avoid extra render calls
-  defp do_render(renderable, context, options)
-       when is_struct(renderable, Text) or is_struct(renderable, Object) do
-    Gas.Renderable.render(renderable, context, options)
+  # Inline the two most common renderables to skip protocol dispatch.
+  defp do_render(%Text{text: text}, context, _options), do: {text, context}
+
+  defp do_render(%Object{argument: arg, filters: filters}, context, options) do
+    {:ok, result, context} = Gas.Argument.render(arg, context, filters, options)
+    {result, context}
   end
 
   defp do_render(tag, context, options) when is_struct(tag) do
