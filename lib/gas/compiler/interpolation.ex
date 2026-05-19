@@ -48,6 +48,13 @@ defmodule Gas.Compiler.Interpolation do
     Map.new(map, fn {k, v} -> {k, walk_tree(v, opts)} end)
   end
 
+  defp walk_tree(tuple, opts) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&walk_tree(&1, opts))
+    |> List.to_tuple()
+  end
+
   defp walk_tree(other, _opts), do: other
 
   @spec normalize_vars(map | any, keyword) :: map | any
@@ -58,6 +65,13 @@ defmodule Gas.Compiler.Interpolation do
   end
 
   def normalize_vars(other, _opts), do: other
+
+  defp walk_vars(tuple, opts) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&walk_vars(&1, opts))
+    |> List.to_tuple()
+  end
 
   defp walk_vars(value, opts) when is_binary(value) do
     case parse_if_interpolated(value, opts) do

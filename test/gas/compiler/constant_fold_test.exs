@@ -64,4 +64,13 @@ defmodule Gas.Compiler.ConstantFoldTest do
       assert render!(template, %{"x" => false}) == "a"
     end
   end
+
+  describe "tuple-containing AST positions" do
+    test "folds nested {% if literal %} inside a case/when body" do
+      # The case/when branch body is held in a tuple; nested if-literal inside
+      # it must still be foldable.
+      template = "{% case x %}{% when 'hit' %}{% if true %}yes{% endif %}{% endcase %}"
+      assert render!(template, %{"x" => "hit"}) == "yes"
+    end
+  end
 end
