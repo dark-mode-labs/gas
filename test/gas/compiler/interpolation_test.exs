@@ -80,7 +80,9 @@ defmodule Gas.Compiler.InterpolationTest do
     end
 
     test "interpolation inside {% else %} body of case renders correctly" do
-      template_str = "{% case s %}{% when 'unknown' %}a{% else %}{{ 'bg-{{ role }}' }}{% endcase %}"
+      template_str =
+        "{% case s %}{% when 'unknown' %}a{% else %}{{ 'bg-{{ role }}' }}{% endcase %}"
+
       {:ok, parsed} = Gas.parse(template_str)
       expanded = Interpolation.expand(parsed, [])
 
@@ -166,7 +168,9 @@ defmodule Gas.Compiler.InterpolationTest do
   # buried inside any nested position.
   defp collect_literals(node, acc \\ [])
   defp collect_literals(%Literal{} = lit, acc), do: [lit | acc]
-  defp collect_literals(list, acc) when is_list(list), do: Enum.reduce(list, acc, &collect_literals/2)
+
+  defp collect_literals(list, acc) when is_list(list),
+    do: Enum.reduce(list, acc, &collect_literals/2)
 
   defp collect_literals(%_struct{} = s, acc) do
     s |> Map.from_struct() |> Map.values() |> Enum.reduce(acc, &collect_literals/2)

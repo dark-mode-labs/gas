@@ -706,7 +706,17 @@ defmodule Gas.Filters.Filter.Color do
 end
 
 defmodule Gas.Filters.Filter.Asset do
-  @moduledoc "Asset/media helpers"
+  @moduledoc """
+  Asset URL helpers. Two classes, each resolved through a host-injected seam:
+  media (`image_url`) via `:asset_resolver`'s `fetch_url/1`; theme
+  (`asset_url`/`font_url`) via the `:theme_asset_url` `(path -> url)` fun.
+  Both pass through unchanged when unconfigured.
+
+      config :gas,
+        theme_assets_relative_path: "/theme/assets",
+        asset_resolver: MyApp.Media,
+        theme_asset_url: &MyAppWeb.Endpoint.static_path/1
+  """
 
   @uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -719,7 +729,7 @@ defmodule Gas.Filters.Filter.Asset do
   def image_url(asset, opts) when is_binary(asset) do
     asset_location =
       with true <- Regex.match?(@uuid_regex, asset),
-           url when is_binary(url) <- resolve_asset_url(asset) do
+           url when is_binary(url) <- resolve_media_url(asset) do
         url
       else
         _ -> asset
@@ -736,33 +746,25 @@ defmodule Gas.Filters.Filter.Asset do
     end
   end
 
-  def asset_url(asset, kind \\ nil), do: asset_src(asset, kind)
+  def asset_url(name, _kind \\ nil), do: theme_url(name)
 
-  def font_url(src) do
-    case src do
-      nil ->
-        nil
+  def font_url(src) when is_binary(src) and src != "", do: theme_url(src)
+  def font_url(_), do: nil
 
-      valid ->
-        Path.join(theme_base(), valid)
+  defp theme_url(name) do
+    Application.get_env(:gas, :theme_assets_relative_path, "")
+    |> Path.join(name)
+    |> resolve_theme_url()
+  end
+
+  defp resolve_theme_url(path) do
+    case Application.get_env(:gas, :theme_asset_url) do
+      fun when is_function(fun, 1) -> fun.(path)
+      _ -> path
     end
   end
 
-  defp asset_src(src, "stylesheet") do
-    """
-    <link rel="stylesheet" href="#{Path.join(theme_base(), [src, ".css"])}"} />
-    """
-  end
-
-  defp asset_src(src, nil) do
-    Path.join(theme_base(), src)
-  end
-
-  defp theme_base do
-    Application.get_env(:gas, :theme_assets_relative_path, "")
-  end
-
-  defp resolve_asset_url(uuid) do
+  defp resolve_media_url(uuid) do
     case Application.get_env(:gas, :asset_resolver) do
       nil -> nil
       mod -> mod.fetch_url(uuid)
@@ -772,22 +774,6 @@ end
 
 defmodule Gas.Filters.Filter.HTML do
   @moduledoc "HTML tag helpers"
-  def link_to(text, url, attrs \\ %{}) do
-    attrs =
-      cond do
-        is_list(attrs) -> Enum.into(attrs, %{})
-        is_map(attrs) -> attrs
-        true -> %{}
-      end
-
-    attr_string = Enum.map_join(attrs, " ", fn {k, v} -> "#{k}=\"#{v}\"" end)
-
-    if attr_string == "" do
-      "<a href=\"#{url}\">#{text}</a>"
-    else
-      "<a href=\"#{url}\" #{attr_string}>#{text}</a>"
-    end
-  end
 
   def preload_tag(url, opts \\ %{}) when is_binary(url) do
     as_value = Map.get(opts, "as", "style")
@@ -797,115 +783,6 @@ defmodule Gas.Filters.Filter.HTML do
   def stylesheet_tag(url, opts \\ %{}) when is_binary(url) do
     media = Map.get(opts, "media", "all")
     ~s(<link rel="stylesheet" href="#{url}" media="#{media}">)
-  end
-
-  def image_tag(url_or_asset, opts \\ %{}) do
-    src =
-      if is_binary(url_or_asset) do
-        url_or_asset
-      else
-        Gas.Filters.Filter.Asset.image_url(
-          url_or_asset,
-          Map.put(opts, "width", Map.get(opts, "width", 2048))
-        )
-      end
-
-    attrs =
-      Enum.map_join(opts, " ", fn {k, v} -> ~s(#{k}="#{escape_attr(v)}") end)
-
-    ~s(<img src="#{src}" #{attrs}>)
-  end
-
-  def video_tag(asset, opts \\ %{}) do
-    poster = Map.get(opts, "poster", nil)
-    poster_attr = if poster in [nil, "nil"], do: "", else: ~s( poster="#{escape_attr(poster)}")
-
-    attrs =
-      opts
-      |> Enum.reject(fn {k, _} -> k == "poster" end)
-      |> Enum.map_join(" ", fn {k, v} -> ~s(#{k}="#{escape_attr(v)}") end)
-
-    ~s(<video #{attrs}#{poster_attr}><source src="#{Gas.Filters.Filter.Asset.asset_url(asset)}"></video>)
-  end
-
-  def inline_asset_content(asset_name) do
-    with folder <- Path.join(theme_base(), asset_name),
-         {:ok, content} <- File.read(folder) do
-      content
-    else
-      _ ->
-        nil
-    end
-  end
-
-  # Font helpers
-  def font_modify(font, key, value) do
-    key = to_string(key)
-    value = to_string(value)
-    opts = %{key => value}
-    font_modify(font, opts)
-  end
-
-  def font_modify(font_name, opts \\ %{}) do
-    opts =
-      cond do
-        is_list(opts) -> Enum.into(opts, %{})
-        is_map(opts) -> opts
-        true -> %{}
-      end
-
-    weight = Map.get(opts, :weight, "400")
-    style = Map.get(opts, :style, "normal")
-    size = Map.get(opts, :size, "16px")
-
-    "#{font_name}; font-weight: #{weight}; font-style: #{style}; font-size: #{size};"
-  end
-
-  def font_face(fonts, opts \\ %{}) do
-    opts =
-      cond do
-        is_map(opts) -> opts
-        Keyword.keyword?(opts) -> Map.new(opts)
-        true -> %{}
-      end
-
-    font_display = Map.get(opts, :font_display, Map.get(opts, "font_display", "swap"))
-
-    font_list =
-      cond do
-        is_list(fonts) -> fonts
-        is_map(fonts) -> [fonts]
-        is_binary(fonts) -> [%{family: fonts}]
-        true -> []
-      end
-
-    Enum.map_join(font_list, "\n", &font_face_block(&1, font_display))
-  end
-
-  defp font_face_block(font, font_display) do
-    fam = Map.get(font, :family, Map.get(font, "family", "Unnamed"))
-    src = Map.get(font, :src, Map.get(font, "src", "/fonts/#{fam}.woff2"))
-    fmt = Map.get(font, :format, Map.get(font, "format", "woff2"))
-    weight = Map.get(font, :weight, Map.get(font, "weight", "400"))
-    style = Map.get(font, :style, Map.get(font, "style", "normal"))
-
-    """
-    @font-face {
-      font-family: '#{fam}';
-      src: url('#{src}') format('#{fmt}');
-      font-weight: #{weight};
-      font-style: #{style};
-      font-display: #{font_display};
-    }
-    """
-    |> String.trim()
-  end
-
-  defp escape_attr(v) when is_binary(v), do: v
-  defp escape_attr(v), do: to_string(v)
-
-  defp theme_base do
-    Path.join(Application.get_env(:gas, :theme_base_path, ""), "/assets")
   end
 end
 
@@ -1220,14 +1097,8 @@ defmodule Gas.Filters.Filter do
   defdelegate asset_url(asset, kind), to: Asset
   defdelegate font_url(font), to: Asset
 
-  defdelegate link_to(text, url, attrs \\ %{}), to: HTML
   defdelegate preload_tag(url, opts \\ %{}), to: HTML
   defdelegate stylesheet_tag(url, opts \\ %{}), to: HTML
-  defdelegate image_tag(url_or_asset, opts \\ %{}), to: HTML
-  defdelegate video_tag(asset, opts \\ %{}), to: HTML
-  defdelegate inline_asset_content(name), to: HTML
-  defdelegate font_modify(name, key_or_opts, maybe_value \\ nil), to: HTML, as: :font_modify
-  defdelegate font_face(fonts, opts \\ %{}), to: HTML
 
   # Delegates: encoding
   defdelegate escape(x), to: Encoding

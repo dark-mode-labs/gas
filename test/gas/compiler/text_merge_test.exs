@@ -66,6 +66,6 @@ defmodule Gas.Compiler.TextMergeTest do
     # tuple-walker. (Even if the body had only one Text to start with,
     # the walker must not drop the tuple.)
     assert length(body_after) <= length(body_before)
-    assert IO.iodata_to_binary(Enum.map(body_after, &(&1.text))) == "aa"
+    assert IO.iodata_to_binary(Enum.map(body_after, & &1.text)) == "aa"
   end
 end
