@@ -517,6 +517,72 @@ defmodule Gas.Filters.Filter.Date do
   def date(other, _fmt), do: other
 end
 
+defmodule Gas.Filters.Filter.Tel do
+  @moduledoc """
+  Phone filter: normalizes a number to E.164.
+
+  Input carrying no international prefix loses its national trunk prefix `0`
+  and takes the country calling code passed as the filter argument, falling
+  back to `config :gas, default_country_code: "1"`. Input that cannot be
+  normalized is returned unchanged.
+
+      {{ "(555) 123-4567" | tel }}        #=> +15551234567
+      {{ "020 7183 8750" | tel: "44" }}   #=> +442071838750
+  """
+
+  alias Gas.Literal.Empty
+
+  @non_digits ~r/[^0-9]/
+  @min_digits 8
+  @max_digits 15
+  @min_subscriber_digits 7
+
+  def tel(input, country_code \\ nil)
+
+  def tel(input, country_code) when is_binary(input) do
+    case e164(String.trim(input), calling_code(country_code)) do
+      {:ok, formatted} -> formatted
+      :error -> input
+    end
+  end
+
+  def tel(input, country_code) when is_integer(input),
+    do: tel(Integer.to_string(input), country_code)
+
+  def tel(other, _country_code), do: other
+
+  defp e164("+" <> international, _code), do: validate(digits(international))
+  defp e164("00" <> international, _code), do: validate(digits(international))
+  defp e164(_national, ""), do: :error
+
+  defp e164(national, code) do
+    digits = digits(national)
+
+    if String.starts_with?(digits, code) and
+         byte_size(digits) - byte_size(code) >= @min_subscriber_digits do
+      validate(digits)
+    else
+      validate(code <> strip_trunk_prefix(digits))
+    end
+  end
+
+  defp strip_trunk_prefix("0" <> subscriber), do: subscriber
+  defp strip_trunk_prefix(digits), do: digits
+
+  defp validate(digits)
+       when byte_size(digits) >= @min_digits and byte_size(digits) <= @max_digits,
+       do: {:ok, "+" <> digits}
+
+  defp validate(_digits), do: :error
+
+  defp calling_code(code) when code in [nil, ""] or code == %Empty{},
+    do: digits(to_string(Application.get_env(:gas, :default_country_code, "1")))
+
+  defp calling_code(code), do: digits(to_string(code))
+
+  defp digits(input), do: String.replace(input, @non_digits, "")
+end
+
 defmodule Gas.Filters.Filter.Color do
   @moduledoc "Color manipulation filters"
   import Gas.Filters.Filter.Utils
@@ -708,15 +774,21 @@ end
 defmodule Gas.Filters.Filter.Asset do
   @moduledoc """
   Asset URL helpers. Two classes, each resolved through a host-injected seam:
-  media (`image_url`) via `:asset_resolver`'s `fetch_url/1`; theme
+  media (`image_url`) via `:asset_resolver`'s `fetch_url/2`, or `fetch_url/1`
+  when the resolver does not export the two-arity form; theme
   (`asset_url`/`font_url`) via the `:theme_asset_url` `(path -> url)` fun.
   Both pass through unchanged when unconfigured.
+
+  `image_url`'s `width` option reaches the resolver as `%{width: pos_integer}`,
+  so the host can build a resizing URL such as an imageproxy `/300x/` prefix.
 
       config :gas,
         theme_assets_relative_path: "/theme/assets",
         asset_resolver: MyApp.Media,
         theme_asset_url: &MyAppWeb.Endpoint.static_path/1
   """
+
+  import Gas.Filters.Filter.Utils
 
   @uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -729,7 +801,7 @@ defmodule Gas.Filters.Filter.Asset do
   def image_url(asset, opts) when is_binary(asset) do
     asset_location =
       with true <- Regex.match?(@uuid_regex, asset),
-           url when is_binary(url) <- resolve_media_url(asset) do
+           url when is_binary(url) <- resolve_media_url(asset, media_opts(opts)) do
         url
       else
         _ -> asset
@@ -764,12 +836,29 @@ defmodule Gas.Filters.Filter.Asset do
     end
   end
 
-  defp resolve_media_url(uuid) do
+  defp resolve_media_url(uuid, opts) do
     case Application.get_env(:gas, :asset_resolver) do
       nil -> nil
-      mod -> mod.fetch_url(uuid)
+      mod -> fetch_url(mod, uuid, opts)
     end
   end
+
+  defp fetch_url(mod, uuid, opts) do
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :fetch_url, 2) do
+      mod.fetch_url(uuid, opts)
+    else
+      mod.fetch_url(uuid)
+    end
+  end
+
+  defp media_opts(opts) when is_map(opts) do
+    case to_integer(Map.get(opts, "width")) do
+      width when width > 0 -> %{width: width}
+      _ -> %{}
+    end
+  end
+
+  defp media_opts(_opts), do: %{}
 end
 
 defmodule Gas.Filters.Filter.HTML do
@@ -1001,6 +1090,7 @@ defmodule Gas.Filters.Filter do
     Numeric,
     Collection,
     Date,
+    Tel,
     Color,
     Asset,
     HTML,
@@ -1083,6 +1173,9 @@ defmodule Gas.Filters.Filter do
   # Delegates: date
   defdelegate date(x, fmt), to: Date
   defdelegate time_tag(x, fmt), to: Date, as: :date
+
+  # Delegates: tel
+  defdelegate tel(x, country_code \\ nil), to: Tel
 
   # Delegates: color
   defdelegate color_brightness(hex), to: Color
