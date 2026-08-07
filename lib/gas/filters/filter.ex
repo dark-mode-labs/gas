@@ -782,6 +782,11 @@ defmodule Gas.Filters.Filter.Asset do
   `image_url`'s `width` option reaches the resolver as `%{width: pos_integer}`,
   so the host can build a resizing URL such as an imageproxy `/300x/` prefix.
 
+  Every `image_url` value reaches the resolver, which returns `nil` for anything
+  it does not own; the value then passes through as a literal URL. That judgement
+  is the host's alone — gas never inspects the string's shape, because only the
+  host knows what its own asset identifiers look like.
+
       config :gas,
         theme_assets_relative_path: "/theme/assets",
         asset_resolver: MyApp.Media,
@@ -789,8 +794,6 @@ defmodule Gas.Filters.Filter.Asset do
   """
 
   import Gas.Filters.Filter.Utils
-
-  @uuid_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
   require Logger
 
@@ -800,10 +803,8 @@ defmodule Gas.Filters.Filter.Asset do
 
   def image_url(asset, opts) when is_binary(asset) do
     asset_location =
-      with true <- Regex.match?(@uuid_regex, asset),
-           url when is_binary(url) <- resolve_media_url(asset, media_opts(opts)) do
-        url
-      else
+      case resolve_media_url(asset, media_opts(opts)) do
+        url when is_binary(url) -> url
         _ -> asset
       end
 

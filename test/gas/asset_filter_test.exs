@@ -2,20 +2,38 @@ defmodule Gas.AssetFilterTest do
   use ExUnit.Case, async: false
   import Gas.Helpers
 
+  @versions ~w(1 2 3 4 5 6 7 8)
+  @uuid "0f9ca6a0-3f18-4c1d-9f2e-6bd9d1a5a111"
+  @uuid_v7 "019fd8e1-3637-7f7d-836f-71d9d29a99a6"
+  @resolved "https://cdn.test/#{@uuid}.png"
+
   defmodule ProxyResolver do
     @moduledoc false
-    def fetch_url(uuid), do: "https://cdn.test/#{uuid}.png"
-    def fetch_url(uuid, %{width: width}), do: "https://img.test/#{width}x/#{fetch_url(uuid)}"
+    @known [
+      "0f9ca6a0-3f18-4c1d-9f2e-6bd9d1a5a111"
+      | Enum.map(~w(1 2 3 4 5 6 7 8), &"019fd8e1-3637-#{&1}f7d-836f-71d9d29a99a6")
+    ]
+
+    def fetch_url(uuid) when uuid in @known, do: "https://cdn.test/#{uuid}.png"
+    def fetch_url(_uuid), do: nil
+
+    def fetch_url(uuid, %{width: width}) do
+      case fetch_url(uuid) do
+        nil -> nil
+        url -> "https://img.test/#{width}x/#{url}"
+      end
+    end
+
     def fetch_url(uuid, _opts), do: fetch_url(uuid)
   end
 
   defmodule LegacyResolver do
     @moduledoc false
-    def fetch_url(uuid), do: "https://cdn.test/#{uuid}.png"
-  end
+    def fetch_url("0f9ca6a0-3f18-4c1d-9f2e-6bd9d1a5a111" = uuid),
+      do: "https://cdn.test/#{uuid}.png"
 
-  @uuid "0f9ca6a0-3f18-4c1d-9f2e-6bd9d1a5a111"
-  @resolved "https://cdn.test/#{@uuid}.png"
+    def fetch_url(_uuid), do: nil
+  end
 
   defp configure(resolver) do
     Application.put_env(:gas, :asset_resolver, resolver)
@@ -68,10 +86,33 @@ defmodule Gas.AssetFilterTest do
     test "is omitted when the filter is given a positional argument" do
       assert render("{{ favicon | image_url: 300 }}", %{"favicon" => @uuid}) == @resolved
     end
+  end
 
-    test "is ignored for an asset that is already a url" do
+  describe "image_url identifier format" do
+    setup do
+      configure(ProxyResolver)
+    end
+
+    test "resolves a v7 identifier" do
+      assert render("{{ favicon | image_url: height: 32 }}", %{"favicon" => @uuid_v7}) ==
+               "https://cdn.test/#{@uuid_v7}.png"
+    end
+
+    test "resolves an identifier of every uuid version" do
+      for v <- @versions do
+        uuid = "019fd8e1-3637-#{v}f7d-836f-71d9d29a99a6"
+
+        assert render("{{ favicon | image_url: height: 32 }}", %{"favicon" => uuid}) ==
+                 "https://cdn.test/#{uuid}.png"
+      end
+    end
+
+    test "passes through a value the resolver declines" do
       assert render(~s({{ "https://example.com/a.png" | image_url: width: 300 }})) ==
                "https://example.com/a.png"
+
+      assert render("{{ favicon | image_url: width: 300 }}", %{"favicon" => "hero-banner1.jpg"}) ==
+               "hero-banner1.jpg"
     end
   end
 
