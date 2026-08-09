@@ -488,6 +488,15 @@ defmodule Gas.Filters.Filter.Date do
   @moduledoc "Date/time filter"
   alias Gas.Literal.Empty
 
+  @units [
+    {31_556_952, "year"},
+    {2_629_746, "month"},
+    {604_800, "week"},
+    {86_400, "day"},
+    {3600, "hour"},
+    {60, "minute"}
+  ]
+
   def date(date, format) when format in [nil, ""] or format == %Empty{}, do: date
 
   def date(map, fmt) when is_map(map) and is_binary(fmt) do
@@ -515,6 +524,97 @@ defmodule Gas.Filters.Filter.Date do
   end
 
   def date(other, _fmt), do: other
+
+  @doc """
+  Renders how long ago a datetime was, in words.
+
+      {{ review.published_at | time_ago }}   #=> 3 hours ago
+
+  The reading never runs forward: a datetime ahead of now reads `just now`, so
+  clock skew in the data cannot surface as a future tense. Use `relative_time`
+  where a future datetime should be phrased as one.
+
+  Anything inside a minute reads `just now`; beyond that the largest whole unit
+  wins, from minutes up to years. Input that cannot be read as a datetime is
+  returned unchanged.
+  """
+  def time_ago(input) do
+    case elapsed(input) do
+      {:ok, seconds} -> in_words(max(seconds, 0))
+      :error -> input
+    end
+  end
+
+  @doc """
+  Renders how far a datetime sits from now in words, in either direction.
+
+      {{ review.published_at | relative_time }}   #=> 3 hours ago
+      {{ order.ships_at | relative_time }}        #=> in 2 days
+
+  Reads the same scale as `time_ago`, and phrases a datetime ahead of now as
+  `in ...` rather than folding it to the past.
+  """
+  def relative_time(input) do
+    case elapsed(input) do
+      {:ok, seconds} -> in_words(seconds)
+      :error -> input
+    end
+  end
+
+  defp elapsed(input) do
+    with {:ok, datetime} <- as_datetime(input) do
+      {:ok, DateTime.diff(DateTime.utc_now(), datetime)}
+    end
+  end
+
+  defp in_words(seconds) when abs(seconds) < 60, do: "just now"
+  defp in_words(seconds) when seconds < 0, do: "in " <> distance(-seconds)
+  defp in_words(seconds), do: distance(seconds) <> " ago"
+
+  defp distance(seconds) do
+    {size, unit} = Enum.find(@units, fn {size, _unit} -> seconds >= size end)
+    count = div(seconds, size)
+
+    "#{count} #{unit}#{if count == 1, do: "", else: "s"}"
+  end
+
+  defp as_datetime(%DateTime{} = datetime), do: {:ok, datetime}
+  defp as_datetime(%NaiveDateTime{} = naive), do: {:ok, DateTime.from_naive!(naive, "Etc/UTC")}
+  defp as_datetime(%Date{} = date), do: {:ok, midnight(date)}
+
+  defp as_datetime(unix) when is_integer(unix) do
+    case DateTime.from_unix(unix, :second) do
+      {:ok, datetime} -> {:ok, datetime}
+      _error -> :error
+    end
+  end
+
+  defp as_datetime(word) when word in ["now", "today"], do: {:ok, DateTime.utc_now()}
+
+  defp as_datetime(str) when is_binary(str) do
+    with {:error, _} <- offset_datetime(str),
+         {:error, _} <- naive_datetime(str),
+         {:error, _} <- calendar_date(str) do
+      :error
+    end
+  end
+
+  defp as_datetime(_other), do: :error
+
+  defp offset_datetime(str) do
+    with {:ok, datetime, _offset} <- DateTime.from_iso8601(str), do: {:ok, datetime}
+  end
+
+  defp naive_datetime(str) do
+    with {:ok, naive} <- NaiveDateTime.from_iso8601(str),
+         do: {:ok, DateTime.from_naive!(naive, "Etc/UTC")}
+  end
+
+  defp calendar_date(str) do
+    with {:ok, date} <- Date.from_iso8601(str), do: {:ok, midnight(date)}
+  end
+
+  defp midnight(date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
 end
 
 defmodule Gas.Filters.Filter.Tel do
@@ -1174,6 +1274,8 @@ defmodule Gas.Filters.Filter do
   # Delegates: date
   defdelegate date(x, fmt), to: Date
   defdelegate time_tag(x, fmt), to: Date, as: :date
+  defdelegate time_ago(x), to: Date
+  defdelegate relative_time(x), to: Date
 
   # Delegates: tel
   defdelegate tel(x, country_code \\ nil), to: Tel
