@@ -18,12 +18,16 @@ defmodule Gas do
 
   defmodule Template do
     @moduledoc """
-    Structure that holds the compiled AST of the parsed liquid
+    Structure that holds the compiled AST of the parsed liquid.
+
+    `module` is set when `Gas.precompile/2` ran with `codegen: true`: the AST was
+    also turned into an Elixir module and rendering dispatches to it instead of
+    walking the tree.
     """
-    @type t :: %__MODULE__{parsed_template: Parser.parse_tree()}
+    @type t :: %__MODULE__{parsed_template: Parser.parse_tree(), module: module | nil}
 
     @enforce_keys [:parsed_template]
-    defstruct [:parsed_template]
+    defstruct [:parsed_template, :module]
   end
 
   defmodule RenderError do
@@ -108,6 +112,22 @@ defmodule Gas do
     end
   end
 
+  @doc """
+  Reads, parses and optimises a template, caching the result.
+
+  ## Options
+
+  - `cache_module`: where the result is stored and looked up. Defaults to
+    `Gas.Caching.NoCache`.
+
+  - `file_system`: a `{module, options}` tuple used to read the template source.
+
+  - `codegen`: if `true`, the AST is also compiled into an Elixir module and
+    `Gas.render/3` dispatches to it. Costs compilation time on a cache miss, so
+    it suits a fixed set of templates warmed at boot rather than one-off text.
+
+  Also accepts `parse/2`'s options.
+  """
   def precompile(template, options \\ []) do
     with cache_module <- Keyword.get(options, :cache_module, Gas.Caching.NoCache),
          {:error, :not_found} <- cache_module.get(template),
@@ -118,11 +138,35 @@ defmodule Gas do
          expanded <- Gas.Compiler.Interpolation.expand(parse_tree, options),
          folded <- Gas.Compiler.ConstantFold.run(expanded),
          merged <- Gas.Compiler.TextMerge.run(folded),
-         :ok <- cache_module.put(template, merged) do
-      {:ok, merged}
+         compiled <- maybe_codegen(merged, options),
+         :ok <- cache_module.put(template, compiled) do
+      {:ok, compiled}
     else
-      {:ok, %Gas.Template{} = parsed_template} -> {:ok, parsed_template}
-      other -> other
+      # A template cached before codegen was on has no module; compile and write it back.
+      {:ok, %Template{module: nil} = cached} ->
+        cache_module = Keyword.get(options, :cache_module, Gas.Caching.NoCache)
+
+        case maybe_codegen(cached, options) do
+          ^cached -> {:ok, cached}
+          compiled -> with :ok <- cache_module.put(template, compiled), do: {:ok, compiled}
+        end
+
+      {:ok, %Template{} = cached} ->
+        {:ok, cached}
+
+      other ->
+        other
+    end
+  end
+
+  defp maybe_codegen(%Template{} = template, options) do
+    if Keyword.get(options, :codegen, false) do
+      case Gas.Compiler.Codegen.compile_cached(template.parsed_template, %{}, options) do
+        {:ok, module} -> %{template | module: module}
+        :error -> template
+      end
+    else
+      template
     end
   end
 
@@ -164,7 +208,11 @@ defmodule Gas do
   @spec render(Parser.parse_tree(), Context.t(), keyword) :: {iolist, Context.t()}
   def render(template_or_text, values, options \\ [])
 
-  def render(%Template{parsed_template: parse_tree}, %Context{} = context, options) do
+  def render(
+        %Template{parsed_template: parse_tree, module: module},
+        %Context{} = context,
+        options
+      ) do
     context = %{
       context
       | matcher_module: Keyword.get(options, :matcher_module, context.matcher_module),
@@ -172,7 +220,8 @@ defmodule Gas do
         strict_variables: Keyword.get(options, :strict_variables, context.strict_variables)
     }
 
-    {result, context} = render(parse_tree, context, options)
+    {result, context} =
+      if module, do: module.render(context, options), else: render(parse_tree, context, options)
 
     process_result(result, context, options)
   catch

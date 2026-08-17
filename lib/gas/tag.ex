@@ -14,6 +14,28 @@ defmodule Gas.Tag do
               | {:error, reason :: binary, Lexer.loc()}
               | {:error, reason :: binary, rest :: binary, Lexer.loc()}
 
+  @doc """
+  Nodes this tag is equivalent to, given the variables already bound at compile
+  time, or `:error` to stay interpreted.
+
+  A tag whose behaviour depends on a value the layout fixes can hand the
+  compiler the tree it would have built, and be compiled like any other node.
+  The replacement must render identically and is used for output only — context
+  changes it makes are discarded, as `Gas.Renderable` implementations that
+  render a sub-template discard theirs.
+  """
+  @callback gas_rewrite(tag :: struct, known :: map) :: {:ok, list} | :error
+
+  @doc """
+  Whether rendering this tag leaves the caller's variables untouched.
+
+  Answering `true` keeps compile-time bindings alive across the tag when it has
+  to be interpreted, so constants after it still fold.
+  """
+  @callback gas_assigns_nothing?() :: boolean
+
+  @optional_callbacks gas_rewrite: 2, gas_assigns_nothing?: 0
+
   def default_tags do
     %{
       "#" => Tags.InlineCommentTag,

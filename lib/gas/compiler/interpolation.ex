@@ -96,13 +96,25 @@ defmodule Gas.Compiler.Interpolation do
 
   defp parse_value(value, opts) do
     case Gas.parse(value, opts) do
-      {:ok, %Template{parsed_template: tree} = template} -> if_interpolated(tree, template)
+      {:ok, %Template{parsed_template: tree} = template} -> if_interpolated(tree, template, opts)
       {:error, _} -> nil
     end
   end
 
+  # Liquid in settings data is a template too, so it compiles like the theme around it.
   defp if_interpolated(tree, template) do
     if text_only?(tree), do: nil, else: template
+  end
+
+  defp if_interpolated(tree, template, opts) do
+    with %Template{} = t <- if_interpolated(tree, template),
+         true <- Keyword.get(opts, :codegen, false),
+         {:ok, module} <- Gas.Compiler.Codegen.compile_cached(tree, %{}, opts) do
+      %{t | module: module}
+    else
+      other when is_struct(other) -> other
+      _ -> if_interpolated(tree, template)
+    end
   end
 
   defp text_only?([]), do: true

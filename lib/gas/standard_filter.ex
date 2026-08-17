@@ -15,6 +15,14 @@ defmodule Gas.StandardFilter do
                     end)
                 end)
 
+  # One clause per filter/arity, so dispatch is a direct call, not apply on an atom.
+  for {name, %{atom: atom, arities: arities}} <- @function_map, arity <- arities do
+    vars = Macro.generate_arguments(arity, __MODULE__)
+
+    defp dispatch(unquote(name), [unquote_splicing(vars)]),
+      do: Filter.unquote(atom)(unquote_splicing(vars))
+  end
+
   @spec apply(String.t(), list(), Gas.Parser.Loc.t(), keyword()) ::
           {:ok, any()} | {:error, Exception.t(), any()} | {:error, Exception.t()}
   def apply(filter, args, loc, _opts) do
@@ -27,11 +35,11 @@ defmodule Gas.StandardFilter do
 
   defp apply_filter(func, args, loc) do
     asked_arity = Enum.count(args)
-    %{atom: atom, arities: arities} = @function_map[func]
+    %{arities: arities} = @function_map[func]
 
     if asked_arity in arities do
       try do
-        {:ok, Kernel.apply(Filter, atom, args)}
+        {:ok, dispatch(func, args)}
       rescue
         e ->
           {:error,

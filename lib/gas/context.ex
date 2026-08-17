@@ -144,15 +144,9 @@ defmodule Gas.Context do
     |> Enum.into(%{}, fn {value, index} -> {index, value} end)
   end
 
+  # First scope with a non-nil value wins; a nil must not mask a later scope's hit.
   defp get_from_scope(context, scopes, variable) when is_list(scopes) do
-    scopes
-    |> Enum.reverse()
-    |> Enum.map(&get_from_scope(context, &1, variable))
-    |> Enum.reduce({:error, {:not_found, variable}}, fn
-      {:ok, nil}, acc = {:ok, _} -> acc
-      value = {:ok, _}, _acc -> value
-      _value, acc -> acc
-    end)
+    scan_scopes(context, scopes, variable, {:error, {:not_found, variable}})
   end
 
   defp get_from_scope(context, :vars, variable),
@@ -163,6 +157,16 @@ defmodule Gas.Context do
 
   defp get_from_scope(context, :iteration_vars, variable),
     do: match_scope(context.iteration_vars, variable, context.matcher_module)
+
+  defp scan_scopes(_context, [], _variable, acc), do: acc
+
+  defp scan_scopes(context, [scope | rest], variable, acc) do
+    case get_from_scope(context, scope, variable) do
+      {:ok, nil} -> scan_scopes(context, rest, variable, {:ok, nil})
+      {:ok, _} = value -> value
+      _error -> scan_scopes(context, rest, variable, acc)
+    end
+  end
 
   defp match_scope(data, [], _matcher), do: {:ok, data}
 

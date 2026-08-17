@@ -142,6 +142,10 @@ defmodule Gas.Argument do
     {:ok, stringify!(value), context}
   end
 
+  # Most rendered values are already strings; skip the protocol + iodata round trip.
+  def stringify!(value) when is_binary(value), do: value
+  def stringify!(value) when is_integer(value), do: Integer.to_string(value)
+
   def stringify!(value) do
     value
     |> stringify_iolist!()
@@ -208,8 +212,8 @@ defmodule Gas.Argument do
     })
   end
 
-  defp do_get(%Literal{interp_ast: %Gas.Template{parsed_template: tree}}, context, _scopes, opts) do
-    {iolist, context} = Gas.render(tree, context, opts)
+  defp do_get(%Literal{interp_ast: %Gas.Template{} = ast}, context, _scopes, opts) do
+    {iolist, context} = render_ast(ast, context, opts)
     {:ok, IO.iodata_to_binary(iolist), context}
   end
 
@@ -217,8 +221,8 @@ defmodule Gas.Argument do
 
   defp do_get(%Variable{} = variable, context, scopes, options) do
     case Context.get_in(context, variable, scopes, options) do
-      {:ok, %Gas.InterpolatedString{ast: %Gas.Template{parsed_template: tree}}, context} ->
-        {iolist, context} = Gas.render(tree, context, options)
+      {:ok, %Gas.InterpolatedString{ast: %Gas.Template{} = ast}, context} ->
+        {iolist, context} = render_ast(ast, context, options)
         {:ok, IO.iodata_to_binary(iolist), context}
 
       other ->
@@ -244,6 +248,11 @@ defmodule Gas.Argument do
 
     {:ok, start..finish//1, context}
   end
+
+  defp render_ast(%Gas.Template{module: nil, parsed_template: tree}, context, opts),
+    do: Gas.render(tree, context, opts)
+
+  defp render_ast(%Gas.Template{module: module}, context, opts), do: module.render(context, opts)
 
   defp apply_filters(input, nil, context, _opts), do: {input, context}
   defp apply_filters(input, [], context, _opts), do: {input, context}
