@@ -368,4 +368,56 @@ defmodule Gas.ContextTest do
       assert Context.run_cycle(context, name, values) == {new_context, @one}
     end
   end
+
+  describe "scope resolution agrees with the original reduce" do
+    # Checked against the algorithm it replaced, for every combination of outcomes.
+    @shapes [:absent, :nil_value, :value]
+
+    defp scope_map(:absent), do: %{}
+    defp scope_map(:nil_value), do: %{"x" => nil}
+    defp scope_map(:value), do: %{"x" => :found}
+
+    defp scope_result(:absent), do: {:error, :not_found}
+    defp scope_result(:nil_value), do: {:ok, nil}
+    defp scope_result(:value), do: {:ok, :found}
+
+    # Verbatim the reduce that get_from_scope/3 used before scan_scopes/4.
+    defp reference(results, keys) do
+      results
+      |> Enum.reverse()
+      |> Enum.reduce({:error, {:not_found, keys}}, fn
+        {:ok, nil}, acc = {:ok, _} -> acc
+        value = {:ok, _}, _acc -> value
+        _value, acc -> acc
+      end)
+    end
+
+    test "every combination of scope outcomes resolves identically" do
+      variable = %Gas.Variable{
+        loc: %Gas.Parser.Loc{line: 1, column: 1},
+        identifier: "x",
+        accesses: [],
+        original_name: "x",
+        static_keys: ["x"]
+      }
+
+      scopes = Gas.Context.default_scopes()
+
+      for iteration <- @shapes, vars <- @shapes, counters <- @shapes do
+        shapes = %{iteration_vars: iteration, vars: vars, counter_vars: counters}
+
+        context = %Gas.Context{
+          iteration_vars: scope_map(iteration),
+          vars: scope_map(vars),
+          counter_vars: scope_map(counters)
+        }
+
+        expected = reference(Enum.map(scopes, &scope_result(shapes[&1])), ["x"])
+        actual = Gas.Context.get_in(context, variable, scopes, [])
+
+        assert {elem(actual, 0), elem(actual, 1)} == {elem(expected, 0), elem(expected, 1)},
+               "disagreed for #{inspect(shapes)}: got #{inspect(actual)}, want #{inspect(expected)}"
+      end
+    end
+  end
 end
