@@ -18,15 +18,17 @@ defmodule Gas.Compiler.Runtime do
   because a template that raises does so on every render.
   """
   def report_fallback(module, error, stacktrace) do
-    key = {__MODULE__, :reported, module}
+    log_once({__MODULE__, :reported, module}, fn ->
+      "gas: compiled render raised in #{inspect(module)}, falling back to the interpreter\n" <>
+        Exception.format(:error, error, Enum.take(stacktrace, 5))
+    end)
+  end
 
+  @doc "Logs `message.()` the first time `key` is seen, for a condition that repeats every render."
+  def log_once(key, message) when is_function(message, 0) do
     unless :persistent_term.get(key, false) do
       :persistent_term.put(key, true)
-
-      Logger.error(
-        "gas: compiled render raised in #{inspect(module)}, falling back to the interpreter\n" <>
-          Exception.format(:error, error, Enum.take(stacktrace, 5))
-      )
+      Logger.error(message.())
     end
 
     :ok

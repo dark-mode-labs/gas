@@ -21,6 +21,8 @@ defmodule Gas.Compiler.Codegen do
 
   @operators [:==, :!=, :<>, :>, :<, :>=, :<=, :contains]
 
+  @module_limit 2_000
+
   # Filters safe at compile time: deterministic, depending only on their arguments.
   @pure_filters ~w(append prepend upcase downcase capitalize strip lstrip rstrip
                    join push push_if split first last size default replace
@@ -48,18 +50,34 @@ defmodule Gas.Compiler.Codegen do
         {:ok, module}
 
       nil ->
-        name = "T#{hash}_#{System.unique_integer([:positive])}"
-
-        case compile(tree, Module.concat(Gas.Compiled, name), known, opts) do
-          {:ok, module} ->
-            :persistent_term.put(key, [{{tree, known}, module} | bucket])
-            {:ok, module}
-
-          :error ->
-            :error
-        end
+        compile_new(tree, known, opts, hash, key, bucket)
     end
   end
+
+  # A loaded module is never purged, and liquid-bearing settings are merchant-editable.
+  defp compile_new(tree, known, opts, hash, key, bucket) do
+    if compiled_count() < Keyword.get(opts, :module_limit, @module_limit) do
+      name = "T#{hash}_#{System.unique_integer([:positive])}"
+
+      case compile(tree, Module.concat(Gas.Compiled, name), known, opts) do
+        {:ok, module} ->
+          :persistent_term.put(key, [{{tree, known}, module} | bucket])
+          :persistent_term.put({__MODULE__, :count}, compiled_count() + 1)
+          {:ok, module}
+
+        :error ->
+          :error
+      end
+    else
+      Gas.Compiler.Runtime.log_once({__MODULE__, :limit_reported}, fn ->
+        "gas: #{@module_limit} compiled templates reached; the rest render interpreted"
+      end)
+
+      :error
+    end
+  end
+
+  defp compiled_count, do: :persistent_term.get({__MODULE__, :count}, 0)
 
   @doc "Builds and loads a module for `tree`. Returns `{:ok, module}` or `:error`."
   @spec compile(list, module, map, keyword) :: {:ok, module} | :error

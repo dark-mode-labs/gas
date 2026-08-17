@@ -1046,4 +1046,38 @@ defmodule Gas.Compiler.CodegenTest do
       refute log =~ "falling back to the interpreter"
     end
   end
+
+  describe "the compiled-module limit" do
+    test "past the limit a tree is left to the interpreter" do
+      template = compiled_template("{{ name }}!")
+
+      assert :error =
+               Codegen.compile_cached(template.parsed_template, %{}, module_limit: 0)
+    end
+
+    test "a setting whose template is past the limit still renders" do
+      opts = [codegen: true, module_limit: 0]
+      template = compiled_template("{{ greeting }}", opts)
+
+      vars =
+        Gas.Compiler.Interpolation.normalize_vars(
+          %{"greeting" => "hi {{ name }}", "name" => "Ada"},
+          opts
+        )
+
+      assert %Gas.InterpolatedString{ast: %Gas.Template{module: nil}} = vars["greeting"]
+
+      {:ok, out, _errors} = Gas.render(template, %Gas.Context{vars: vars}, [])
+
+      assert IO.iodata_to_binary(out) == "hi Ada"
+    end
+
+    test "under the limit the same tree still reuses one module" do
+      template = compiled_template("{{ name }}?")
+      tree = template.parsed_template
+
+      assert {:ok, first} = Codegen.compile_cached(tree, %{}, module_limit: 1_000_000)
+      assert {:ok, ^first} = Codegen.compile_cached(tree, %{}, module_limit: 1_000_000)
+    end
+  end
 end
