@@ -56,7 +56,7 @@ defmodule Gas.Compiler.Codegen do
 
   # A loaded module is never purged, and liquid-bearing settings are merchant-editable.
   defp compile_new(tree, known, opts, hash, key, bucket) do
-    if compiled_count() < Keyword.get(opts, :module_limit, @module_limit) do
+    if compiled_count() < module_limit(opts) do
       name = "T#{hash}_#{System.unique_integer([:positive])}"
 
       case compile(tree, Module.concat(Gas.Compiled, name), known, opts) do
@@ -70,7 +70,7 @@ defmodule Gas.Compiler.Codegen do
       end
     else
       Gas.Compiler.Runtime.log_once({__MODULE__, :limit_reported}, fn ->
-        "gas: #{@module_limit} compiled templates reached; the rest render interpreted"
+        "gas: #{module_limit(opts)} compiled templates reached; the rest render interpreted"
       end)
 
       :error
@@ -78,6 +78,14 @@ defmodule Gas.Compiler.Codegen do
   end
 
   defp compiled_count, do: :persistent_term.get({__MODULE__, :count}, 0)
+
+  # Tunable by the host: a node serving many merchants mints one module per
+  # distinct liquid-bearing setting, and they are never purged.
+  defp module_limit(opts) do
+    Keyword.get_lazy(opts, :module_limit, fn ->
+      Application.get_env(:gas, :max_compiled_modules, @module_limit)
+    end)
+  end
 
   @doc "Builds and loads a module for `tree`. Returns `{:ok, module}` or `:error`."
   @spec compile(list, module, map, keyword) :: {:ok, module} | :error

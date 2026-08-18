@@ -1015,7 +1015,7 @@ defmodule Gas.Compiler.CodegenTest do
           assert_raise Protocol.UndefinedError, fn -> compiled.render(context, []) end
         end)
 
-      assert log =~ "falling back to the interpreter"
+      assert log =~ "renders interpreted from here"
       assert log =~ inspect(mod)
     end
 
@@ -1031,8 +1031,8 @@ defmodule Gas.Compiler.CodegenTest do
         end)
       end
 
-      assert raise_once.() =~ "falling back to the interpreter"
-      refute raise_once.() =~ "falling back to the interpreter"
+      assert raise_once.() =~ "renders interpreted from here"
+      refute raise_once.() =~ "renders interpreted from here"
     end
 
     test "a render that does not raise stays quiet" do
@@ -1043,7 +1043,7 @@ defmodule Gas.Compiler.CodegenTest do
 
       log = capture_log(fn -> compiled.render(context, []) end)
 
-      refute log =~ "falling back to the interpreter"
+      refute log =~ "renders interpreted from here"
     end
   end
 
