@@ -11,24 +11,33 @@ defmodule Gas.Compiler.Runtime do
   require Logger
 
   @doc """
-  Reports a compiled render that raised, before its tree is re-run interpreted.
+  Notes that a template will render interpreted, because its compiled form raised.
 
-  The retry produces the same output, so a bug in generated code costs only the
-  speedup — and would otherwise leave no trace at all. Reported once per module,
-  because a template that raises does so on every render.
+  Output is unaffected — the tree is re-run and produces the same bytes — so this
+  is a lost speedup, not a failure, and it is a warning rather than an error.
+  Said once per module, because a template that raises does so on every render.
   """
   def report_fallback(module, error, stacktrace) do
     log_once({__MODULE__, :reported, module}, fn ->
-      "gas: compiled render raised in #{inspect(module)}, falling back to the interpreter\n" <>
-        Exception.format(:error, error, Enum.take(stacktrace, 5))
+      "gas: #{inspect(module)} renders interpreted from here; its compiled form raised " <>
+        "#{Exception.message(error)}#{origin(stacktrace)}"
     end)
   end
+
+  # A stacktrace entry carries either an arity or the captured arguments.
+  defp origin([{mod, fun, args, _location} | _rest]) when is_list(args),
+    do: " in #{inspect(mod)}.#{fun}/#{length(args)}"
+
+  defp origin([{mod, fun, arity, _location} | _rest]) when is_integer(arity),
+    do: " in #{inspect(mod)}.#{fun}/#{arity}"
+
+  defp origin(_stacktrace), do: ""
 
   @doc "Logs `message.()` the first time `key` is seen, for a condition that repeats every render."
   def log_once(key, message) when is_function(message, 0) do
     unless :persistent_term.get(key, false) do
       :persistent_term.put(key, true)
-      Logger.error(message.())
+      Logger.warning(message.())
     end
 
     :ok
