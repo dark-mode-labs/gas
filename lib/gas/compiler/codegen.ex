@@ -1278,7 +1278,15 @@ defmodule Gas.Compiler.Codegen do
   defp known_filter?(name, arity), do: arity in Map.get(@filters, name, [])
 
   # ---- conditions --------------------------------------------------------
-  defp condition(%Gas.UnaryCondition{child_condition: nil} = test, ctx, known) do
+  # `and`/`or` fold only as a whole, so a settled half still reaches here.
+  defp condition(test, ctx, known) do
+    case const_condition(test, known) do
+      {:ok, value} -> {:ok, literal(value)}
+      :unknown -> runtime_condition(test, ctx, known)
+    end
+  end
+
+  defp runtime_condition(%Gas.UnaryCondition{child_condition: nil} = test, ctx, known) do
     with true <- test.argument_filters in [nil, []],
          {:ok, code} <- condition_value(test.argument, ctx, known) do
       {:ok, "truthy(#{code})"}
@@ -1287,7 +1295,7 @@ defmodule Gas.Compiler.Codegen do
     end
   end
 
-  defp condition(%Gas.BinaryCondition{child_condition: nil} = test, ctx, known) do
+  defp runtime_condition(%Gas.BinaryCondition{child_condition: nil} = test, ctx, known) do
     with true <- test.left_argument_filters in [nil, []],
          true <- test.right_argument_filters in [nil, []],
          true <- test.operator in @operators,
@@ -1299,7 +1307,7 @@ defmodule Gas.Compiler.Codegen do
     end
   end
 
-  defp condition(%mod{child_condition: {joiner, child}} = test, ctx, known)
+  defp runtime_condition(%mod{child_condition: {joiner, child}} = test, ctx, known)
        when mod in [Gas.BinaryCondition, Gas.UnaryCondition] and joiner in [:and, :or] do
     with {:ok, left} <- condition(%{test | child_condition: nil}, ctx, known),
          {:ok, right} <- condition(child, ctx, known) do
@@ -1309,7 +1317,7 @@ defmodule Gas.Compiler.Codegen do
     end
   end
 
-  defp condition(_other, _ctx, _known), do: :error
+  defp runtime_condition(_other, _ctx, _known), do: :error
 
   # A condition has nowhere to put a helper function, so one that needs it must not compile.
   defp condition_value(argument, ctx, known) do

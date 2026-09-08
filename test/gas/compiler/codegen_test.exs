@@ -179,6 +179,28 @@ defmodule Gas.Compiler.CodegenTest do
     expected
   end
 
+  # The module-level rescue would satisfy a parity assert by falling back, so check the log.
+  defp half_settled(source, known, vars) do
+    template = compiled_template(source)
+    mod = Module.concat([Gas.CodegenCase, "H#{System.unique_integer([:positive])}"])
+    {:ok, compiled} = Codegen.compile(template.parsed_template, mod, known)
+    context = %Gas.Context{vars: Map.merge(known, vars)}
+
+    {rendered, log} =
+      with_log(fn ->
+        {out, _ctx} = compiled.render(context, [])
+        IO.iodata_to_binary(out)
+      end)
+
+    {interpreted, _ctx} = Gas.render(template.parsed_template, context, [])
+
+    refute log =~ "renders interpreted from here",
+           "the compiled form fell back to the interpreter"
+
+    assert rendered == IO.iodata_to_binary(interpreted)
+    rendered
+  end
+
   defp specialised_source(source, known) do
     template = compiled_template(source)
     mod = Module.concat([Gas.CodegenCase, "Src#{System.unique_integer([:positive])}"])
@@ -927,6 +949,52 @@ defmodule Gas.Compiler.CodegenTest do
 
         assert references > 1, "#{name} is defined but nothing calls it"
       end
+    end
+  end
+
+  describe "a condition the bindings only half settle" do
+    test "a settled operand emits its answer, the other still reads at runtime" do
+      source = "{% if flag and user %}both{% else %}one{% endif %}"
+      known = %{"flag" => true}
+
+      assert half_settled(source, known, %{"user" => "ada"}) == "both"
+      assert half_settled(source, known, %{}) == "one"
+
+      # `truthy/1` is also defined in every generated module, so match the call site.
+      generated = specialised_source(source, known)
+      assert generated =~ "(true and", "a settled operand must emit its answer"
+      refute generated =~ "(truthy(true)", "a settled operand must not compile to a call"
+      assert generated =~ "truthy(get(", "the unsettled operand must still be read"
+    end
+
+    test "a settled operand that decides an `and` still agrees with the interpreter" do
+      source = "{% if flag and user %}both{% else %}one{% endif %}"
+      known = %{"flag" => false}
+
+      assert half_settled(source, known, %{"user" => "ada"}) == "one"
+      assert specialised_source(source, known) =~ "(false and"
+    end
+
+    test "an `or` folds its settled half the same way" do
+      source = "{% if flag or user %}either{% else %}neither{% endif %}"
+      known = %{"flag" => false}
+
+      assert half_settled(source, known, %{"user" => "ada"}) == "either"
+      assert half_settled(source, known, %{}) == "neither"
+      assert specialised_source(source, known) =~ "(false or"
+    end
+
+    test "an elsif whose test is settled folds too" do
+      source = "{% if a %}A{% elsif flag and user %}B{% else %}C{% endif %}"
+      known = %{"flag" => true}
+
+      assert half_settled(source, known, %{"user" => "ada"}) == "B"
+      assert half_settled(source, known, %{"a" => "yes"}) == "A"
+      assert half_settled(source, known, %{}) == "C"
+
+      generated = specialised_source(source, known)
+      assert generated =~ "(true and"
+      refute generated =~ "(truthy(true)"
     end
   end
 
