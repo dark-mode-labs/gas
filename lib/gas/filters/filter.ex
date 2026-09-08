@@ -965,12 +965,19 @@ end
 defmodule Gas.Filters.Filter.HTML do
   @moduledoc "HTML tag helpers"
 
-  def preload_tag(url, opts \\ %{}) when is_binary(url) do
+  # Raising here costs the whole template its compiled form, not just this tag.
+  def preload_tag(url, opts \\ %{})
+  def preload_tag(url, _opts) when not is_binary(url), do: ""
+
+  def preload_tag(url, opts) do
     as_value = Map.get(opts, "as", "style")
     ~s(<link rel="preload" href="#{url}" as="#{as_value}">)
   end
 
-  def stylesheet_tag(url, opts \\ %{}) when is_binary(url) do
+  def stylesheet_tag(url, opts \\ %{})
+  def stylesheet_tag(url, _opts) when not is_binary(url), do: ""
+
+  def stylesheet_tag(url, opts) do
     media = Map.get(opts, "media", "all")
     ~s(<link rel="stylesheet" href="#{url}" media="#{media}">)
   end
