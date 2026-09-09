@@ -123,8 +123,16 @@ defmodule Gas do
   - `file_system`: a `{module, options}` tuple used to read the template source.
 
   - `codegen`: if `true`, the AST is also compiled into an Elixir module and
-    `Gas.render/3` dispatches to it. Costs compilation time on a cache miss, so
-    it suits a fixed set of templates warmed at boot rather than one-off text.
+    `Gas.render/3` dispatches to it. Costs compilation time on a cache miss
+    unless `on_codegen_miss` takes it off the render path.
+
+  - `on_codegen_miss`: a 1-arity function given the AST of a template that has
+    no compiled module yet. The template renders interpreted, and a later call
+    picks up whatever the callback's own process compiled. It runs on the render
+    path, so it must hand the work off rather than do it.
+
+  - `instrument`: a 2-arity function given a rendered template's name and a
+    zero-arity function to run, so a host can time each `{% render %}`.
 
   Also accepts `parse/2`'s options.
   """
@@ -161,9 +169,9 @@ defmodule Gas do
 
   defp maybe_codegen(%Template{} = template, options) do
     if Keyword.get(options, :codegen, false) do
-      case Gas.Compiler.Codegen.compile_cached(template.parsed_template, %{}, options) do
+      case Gas.Compiler.Codegen.fetch_or_defer(template.parsed_template, %{}, options) do
         {:ok, module} -> %{template | module: module}
-        :error -> template
+        _deferred_or_error -> template
       end
     else
       template

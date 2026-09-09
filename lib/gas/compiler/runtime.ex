@@ -88,15 +88,26 @@ defmodule Gas.Compiler.Runtime do
 
   @doc """
   Renders a compiled callee with a fresh context, applying the same option
-  overrides `Gas.render/3` would.
+  overrides `Gas.render/3` would. `template` names it for `:instrument`.
   """
-  def render_module(module, vars, context, opts) do
-    {out, inner} = module.render(inner_context(vars, opts), opts)
-    {out, merge_errors(context, inner)}
+  def render_module(module, vars, context, opts, template \\ nil) do
+    instrument(opts, template, fn ->
+      {out, inner} = module.render(inner_context(vars, opts), opts)
+      {out, merge_errors(context, inner)}
+    end)
   end
 
-  @doc "`{% render x for list as name %}` — one render per element."
-  def render_each(module, value, name, context, opts) when is_list(value) do
+  @doc "`{% render x for list as name %}` — one render per element, timed as one."
+  def render_each(module, value, name, context, opts, template \\ nil)
+
+  def render_each(module, value, name, context, opts, template) when is_list(value) do
+    instrument(opts, template, fn -> each(module, value, name, context, opts) end)
+  end
+
+  def render_each(module, value, name, context, opts, template),
+    do: render_module(module, %{name => value}, context, opts, template)
+
+  defp each(module, value, name, context, opts) do
     length = Enum.count(value)
 
     value
@@ -112,8 +123,21 @@ defmodule Gas.Compiler.Runtime do
     end)
   end
 
-  def render_each(module, value, name, context, opts),
-    do: render_module(module, %{name => value}, context, opts)
+  @doc """
+  Runs `fun` through the host's `:instrument`, so it can time the render of `template` by name.
+
+  Every `{% render %}` goes through here, compiled or interpreted, and a render with no name to
+  report goes straight through.
+  """
+  @spec instrument(keyword, term, (-> term)) :: term
+  def instrument(opts, template, fun) when is_binary(template) do
+    case Keyword.get(opts, :instrument) do
+      instrument when is_function(instrument, 2) -> instrument.(template, fun)
+      nil -> fun.()
+    end
+  end
+
+  def instrument(_opts, _template, fun), do: fun.()
 
   defp inner_context(vars, opts) do
     %Context{
@@ -211,6 +235,10 @@ defmodule Gas.Compiler.Runtime do
 
   @doc "`{% render %}` with its arguments already evaluated by the caller."
   def render_partial(name, vars, context, opts, loc) do
+    instrument(opts, name, fn -> partial(name, vars, context, opts, loc) end)
+  end
+
+  defp partial(name, vars, context, opts, loc) do
     case Gas.precompile(name, Keyword.put_new(opts, :file_system, {Gas.BlankFileSystem, nil})) do
       {:ok, {_name, %Template{} = template}} -> render_into(template, vars, context, opts)
       {:ok, %Template{} = template} -> render_into(template, vars, context, opts)

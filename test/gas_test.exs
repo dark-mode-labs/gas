@@ -493,4 +493,61 @@ defmodule GasTest do
                    end
     end
   end
+
+  describe "precompile/2 with :on_codegen_miss" do
+    defmodule EchoFileSystem do
+      @behaviour Gas.FileSystem
+
+      @impl true
+      def read_template_file(name, _opts), do: {:ok, "<#{name}>{{ who }}"}
+    end
+
+    defp cached_opts(extra) do
+      Keyword.merge(
+        [file_system: {EchoFileSystem, nil}, cache_module: Gas.Caching.EtsCache, codegen: true],
+        extra
+      )
+    end
+
+    defp render_to_binary(template, vars, opts) do
+      {:ok, out, _errors} = Gas.render(template, %Gas.Context{vars: vars}, opts)
+      IO.iodata_to_binary(out)
+    end
+
+    test "a first precompile interprets, and the module lands on a later one" do
+      test = self()
+      name = "deferred-#{System.unique_integer([:positive])}"
+      opts = cached_opts(on_codegen_miss: fn tree -> send(test, {:enqueued, tree}) end)
+
+      assert {:ok, %Gas.Template{module: nil}} = Gas.precompile(name, opts)
+      assert_received {:enqueued, tree}
+
+      # What the host's own process does with the tree it was handed.
+      assert {:ok, _module} = Gas.Compiler.Codegen.compile_cached(tree, %{}, opts)
+
+      assert {:ok, %Gas.Template{module: module}} = Gas.precompile(name, opts)
+      assert module, "the host compiled it, but the template cache never picked the module up"
+    end
+
+    test "the deferred render produces exactly what the compiled one does" do
+      name = "parity-#{System.unique_integer([:positive])}"
+      vars = %{"who" => "Ada"}
+
+      deferred = cached_opts(on_codegen_miss: fn _tree -> :ok end)
+      compiled = cached_opts(cache_module: Gas.Caching.NoCache)
+
+      assert {:ok, %Gas.Template{module: nil} = d} = Gas.precompile(name, deferred)
+      assert {:ok, %Gas.Template{module: m} = c} = Gas.precompile(name, compiled)
+      assert m, "the comparison side did not compile, so this proves nothing"
+
+      assert render_to_binary(d, vars, deferred) == render_to_binary(c, vars, compiled)
+    end
+
+    test "compiles inline when the host offers no callback" do
+      name = "inline-#{System.unique_integer([:positive])}"
+
+      assert {:ok, %Gas.Template{module: module}} = Gas.precompile(name, cached_opts([]))
+      assert module
+    end
+  end
 end

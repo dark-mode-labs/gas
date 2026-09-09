@@ -41,21 +41,63 @@ defmodule Gas.Compiler.Codegen do
   @spec compile_cached(list, map, keyword) :: {:ok, module} | :error
   def compile_cached(tree, known \\ %{}, opts \\ []) do
     tree = List.wrap(tree)
-    hash = :erlang.phash2({tree, known})
-    key = {__MODULE__, :tree, hash}
-    bucket = :persistent_term.get(key, [])
 
-    case List.keyfind(bucket, {tree, known}, 0) do
-      {_, module} ->
-        {:ok, module}
-
-      nil ->
-        compile_new(tree, known, opts, hash, key, bucket)
+    case fetch_cached(tree, known) do
+      {:ok, module} -> {:ok, module}
+      :error -> compile_new(tree, known, opts)
     end
   end
 
+  @doc "The module already compiled for `tree`, or `:error`. Never compiles one."
+  @spec fetch_cached(list, map) :: {:ok, module} | :error
+  def fetch_cached(tree, known \\ %{}) do
+    tree = List.wrap(tree)
+
+    case List.keyfind(bucket(tree, known), {tree, known}, 0) do
+      {_, module} -> {:ok, module}
+      nil -> :error
+    end
+  end
+
+  @doc """
+  The module for `tree`, compiling one unless the host asked to be handed misses instead.
+
+  With `:on_codegen_miss` set, an uncompiled tree goes to the host and this answers `:deferred`:
+  the caller renders interpreted now and reads the module on a later pass. The callback runs on
+  the render path, so it must hand the work off rather than do it.
+  """
+  @spec fetch_or_defer(list, map, keyword) :: {:ok, module} | :deferred | :error
+  def fetch_or_defer(tree, known \\ %{}, opts \\ []) do
+    tree = List.wrap(tree)
+
+    case fetch_cached(tree, known) do
+      {:ok, module} ->
+        {:ok, module}
+
+      :error ->
+        case Keyword.get(opts, :on_codegen_miss) do
+          fun when is_function(fun, 1) ->
+            fun.(tree)
+            :deferred
+
+          nil ->
+            compile_new(tree, known, opts)
+        end
+    end
+  end
+
+  defp bucket(tree, known), do: :persistent_term.get(bucket_key(tree, known), [])
+
+  defp bucket_key(tree, known), do: bucket_key(:erlang.phash2({tree, known}))
+
+  defp bucket_key(hash), do: {__MODULE__, :tree, hash}
+
   # A loaded module is never purged, and liquid-bearing settings are merchant-editable.
-  defp compile_new(tree, known, opts, hash, key, bucket) do
+  defp compile_new(tree, known, opts) do
+    hash = :erlang.phash2({tree, known})
+    key = bucket_key(hash)
+    bucket = :persistent_term.get(key, [])
+
     if compiled_count() < module_limit(opts) do
       name = "T#{hash}_#{System.unique_integer([:positive])}"
 
@@ -797,16 +839,18 @@ defmodule Gas.Compiler.Codegen do
 
       case {vars_code, constant_output(module)} do
         # a `for` render repeats its callee, so a constant body still varies in count
-        {{:each, name, source}, _} ->
+        {{:each, var, source}, _} ->
           line =
             "{o#{slot}, c#{slot + 1}} = " <>
-              "render_each(#{inspect(module)}, #{source}, #{literal(name)}, c#{slot}, o)"
+              "render_each(#{inspect(module)}, #{source}, #{literal(var)}, c#{slot}, o, " <>
+              "#{literal(name)})"
 
           {:ok, line, "o#{slot}", state, slot + 1}
 
         {vars, nil} ->
           line =
-            "{o#{slot}, c#{slot + 1}} = render_module(#{inspect(module)}, #{vars}, c#{slot}, o)"
+            "{o#{slot}, c#{slot + 1}} = " <>
+              "render_module(#{inspect(module)}, #{vars}, c#{slot}, o, #{literal(name)})"
 
           {:ok, line, "o#{slot}", state, slot + 1}
 
