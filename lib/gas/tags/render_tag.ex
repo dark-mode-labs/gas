@@ -127,10 +127,13 @@ defmodule Gas.Tags.RenderTag do
 
   defimpl Gas.Renderable do
     def render(tag, context, options) do
-      tag
-      |> get_template_name(context, options)
-      |> get_or_put_cache(options)
-      |> do_render(tag, context, options)
+      name = get_template_name(tag, context, options)
+
+      Gas.Compiler.Runtime.instrument(options, name, fn ->
+        name
+        |> get_or_put_cache(options)
+        |> do_render(tag, context, options)
+      end)
     end
 
     defp get_template_name(tag, context, options) do

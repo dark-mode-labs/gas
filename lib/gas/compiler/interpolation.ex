@@ -107,13 +107,16 @@ defmodule Gas.Compiler.Interpolation do
   end
 
   defp if_interpolated(tree, template, opts) do
-    with %Template{} = t <- if_interpolated(tree, template),
-         true <- Keyword.get(opts, :codegen, false),
-         {:ok, module} <- Gas.Compiler.Codegen.compile_cached(tree, %{}, opts) do
-      %{t | module: module}
-    else
-      other when is_struct(other) -> other
-      _ -> if_interpolated(tree, template)
+    case if_interpolated(tree, template) do
+      nil -> nil
+      t -> if Keyword.get(opts, :codegen, false), do: codegen(t, tree, opts), else: t
+    end
+  end
+
+  defp codegen(template, tree, opts) do
+    case Gas.Compiler.Codegen.fetch_or_defer(tree, %{}, opts) do
+      {:ok, module} -> %{template | module: module}
+      _deferred_or_error -> template
     end
   end
 

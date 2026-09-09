@@ -122,6 +122,53 @@ defmodule Gas.Compiler.InterpolationTest do
     end
   end
 
+  describe "normalize_vars/2 with :on_codegen_miss" do
+    # The compiled-module cache is global and never purged, so each test needs its own tree.
+    defp unique_liquid, do: "hi {{ name }} #{System.unique_integer([:positive])}"
+
+    test "hands an uncompiled tree to the host and leaves the string interpreted" do
+      test = self()
+      opts = [codegen: true, on_codegen_miss: fn tree -> send(test, {:enqueued, tree}) end]
+
+      normalized = Interpolation.normalize_vars(%{"t" => unique_liquid()}, opts)
+
+      assert %InterpolatedString{ast: %Template{module: nil}} = normalized["t"]
+      assert_received {:enqueued, [_ | _]}
+    end
+
+    test "reads the module the host compiled, on the next pass" do
+      test = self()
+      opts = [codegen: true, on_codegen_miss: fn tree -> send(test, {:enqueued, tree}) end]
+      vars = %{"t" => unique_liquid()}
+
+      Interpolation.normalize_vars(vars, opts)
+      assert_received {:enqueued, tree}
+      assert {:ok, _module} = Gas.Compiler.Codegen.compile_cached(tree, %{}, opts)
+
+      assert %InterpolatedString{ast: %Template{module: module}} =
+               Interpolation.normalize_vars(vars, opts)["t"]
+
+      assert module, "the host compiled the tree but a later render still interprets it"
+    end
+
+    test "compiles inline when the host offers no callback" do
+      normalized = Interpolation.normalize_vars(%{"t" => unique_liquid()}, codegen: true)
+
+      assert %InterpolatedString{ast: %Template{module: module}} = normalized["t"]
+      assert module
+    end
+
+    test "is not consulted when codegen is off" do
+      opts = [
+        codegen: false,
+        on_codegen_miss: fn _ -> flunk("asked the host with codegen off") end
+      ]
+
+      assert %InterpolatedString{ast: %Template{module: nil}} =
+               Interpolation.normalize_vars(%{"t" => unique_liquid()}, opts)["t"]
+    end
+  end
+
   describe "normalize_vars/2 on the data side" do
     test "replaces binaries containing {{ }} with InterpolatedString sentinels" do
       vars = %{"greeting" => "hello {{ name }}"}

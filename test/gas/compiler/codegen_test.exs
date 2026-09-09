@@ -1148,4 +1148,118 @@ defmodule Gas.Compiler.CodegenTest do
       assert {:ok, ^first} = Codegen.compile_cached(tree, %{}, module_limit: 1_000_000)
     end
   end
+
+  describe "fetch_or_defer/3" do
+    test "keeps a tree compiled with bindings apart from the same tree without them" do
+      tree = compiled_template("{{ a }}/{{ b }}").parsed_template
+      opts = [module_limit: 1_000_000]
+
+      assert {:ok, plain} = Codegen.fetch_or_defer(tree, %{}, opts)
+      assert {:ok, specialised} = Codegen.fetch_or_defer(tree, %{"a" => "A"}, opts)
+
+      refute plain == specialised,
+             "a tree asked for with bindings was answered with the unbound module"
+    end
+
+    test "answers a repeat from the cache rather than compiling again" do
+      tree = compiled_template("{{ a }}+{{ b }}").parsed_template
+      opts = [module_limit: 1_000_000]
+
+      assert {:ok, first} = Codegen.fetch_or_defer(tree, %{}, opts)
+      assert {:ok, ^first} = Codegen.fetch_or_defer(tree, %{}, opts)
+    end
+  end
+
+  describe ":instrument" do
+    defp instrumented(opts) do
+      test = self()
+
+      Keyword.merge(opts,
+        file_system: {TestFileSystem, nil},
+        instrument: fn template, fun ->
+          send(test, {:timed, template})
+          fun.()
+        end
+      )
+    end
+
+    defp timed_names(acc \\ []) do
+      receive do
+        {:timed, template} -> timed_names([template | acc])
+      after
+        0 -> Enum.sort(acc)
+      end
+    end
+
+    # `known` has to hold something, or the compiler never resolves a literal target; and the
+    # callee has to read a runtime var, or its output folds to a literal and nothing renders.
+    defp compile_with(source, known, opts) do
+      template = compiled_template(source, opts)
+      mod = Module.concat([Gas.CodegenCase, "I#{System.unique_integer([:positive])}"])
+      {src, _nodes, _covered, _total} = Codegen.source(template.parsed_template, mod, known, opts)
+      {:ok, compiled} = Codegen.compile(template.parsed_template, mod, known, opts)
+      {compiled, src}
+    end
+
+    defp rendered(compiled, vars, opts) do
+      {out, _ctx} = compiled.render(%Gas.Context{vars: vars}, opts)
+      IO.iodata_to_binary(out)
+    end
+
+    test "times a render whose target is only known at runtime" do
+      opts = instrumented(codegen: true)
+      vars = %{"which" => "greeting", "who" => "Ada"}
+      {compiled, src} = compile_with("{% render which, name: who %}", %{"other" => 1}, opts)
+
+      assert src =~ "render_partial(", "this test is not driving the runtime-target path"
+      assert rendered(compiled, vars, opts) == "Hi Ada!"
+      assert timed_names() == ["greeting"]
+    end
+
+    test "times a render the compiler resolved and inlined" do
+      opts = instrumented(codegen: true)
+
+      {compiled, src} =
+        compile_with("[{% render 'greeting', name: who %}]", %{"other" => 1}, opts)
+
+      assert src =~ "render_module(", "this test is not driving the inlined path"
+      assert rendered(compiled, %{"who" => "Ada"}, opts) == "[Hi Ada!]"
+      assert timed_names() == ["greeting"]
+    end
+
+    # The template and the loop variable are named differently on purpose: with both called
+    # "each" this could not tell which of the two the span was named after.
+    test "times a `render for` once for the whole loop, under the template's name" do
+      opts = instrumented(codegen: true)
+      src = "{% render 'counted' for xs as each %}"
+      {compiled, generated} = compile_with(src, %{"other" => 1}, opts)
+
+      assert generated =~ "render_each(", "this test is not driving the render-for path"
+      assert rendered(compiled, %{"xs" => ["a", "b"]}, opts) == "1/2 2/2 "
+      assert timed_names() == ["counted"]
+    end
+
+    test "times an interpreted render too, not only a compiled one" do
+      opts = instrumented(codegen: false)
+      template = compiled_template("{% render 'greeting', name: who %}", opts)
+
+      assert {:ok, out, _errors} =
+               Gas.render(template, %Gas.Context{vars: %{"who" => "Ada"}}, opts)
+
+      assert IO.iodata_to_binary(out) == "Hi Ada!"
+      assert timed_names() == ["greeting"], "the interpreter renders sections with no timing"
+    end
+
+    test "renders identically with no instrument given" do
+      plain = [file_system: {TestFileSystem, nil}, codegen: true]
+      source = "[{% render 'greeting', name: who %}]"
+      vars = %{"who" => "Ada"}
+
+      {with_it, _} = compile_with(source, %{"other" => 1}, instrumented(codegen: true))
+      {without, _} = compile_with(source, %{"other" => 1}, plain)
+
+      assert rendered(without, vars, plain) ==
+               rendered(with_it, vars, instrumented(codegen: true))
+    end
+  end
 end
