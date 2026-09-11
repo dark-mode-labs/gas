@@ -728,6 +728,44 @@ defmodule Gas.Compiler.CodegenTest do
       %{opts: opts}
     end
 
+    # Pins what is decidable: every template gets a module, in dependency order, same source
+    # either way. The ordering barrier itself is a property of the levels, not of a race.
+    test "compiling a level at once builds what compiling one at a time does", %{opts: opts} do
+      names = ~w(greeting outer ctx each counted bare mixed)
+
+      shapes = fn concurrency ->
+        Enum.each(names, &Gas.forget/1)
+        built = Gas.precompile_all(names, [codegen: true, max_concurrency: concurrency] ++ opts)
+
+        for {name, result} <- built do
+          assert {:ok, %Gas.Template{module: module}} = result
+          assert module, "#{name} came out of the pass with no module"
+          {name, emitted_source_of(name, opts)}
+        end
+      end
+
+      serial = shapes.(1)
+      parallel = shapes.(8)
+
+      assert Enum.map(serial, &elem(&1, 0)) == Enum.map(parallel, &elem(&1, 0))
+      assert serial == parallel
+
+      outer = serial |> Enum.find(&(elem(&1, 0) == "outer")) |> elem(1)
+
+      assert outer =~ "render_module(",
+             "the caller stopped calling its callee's module directly"
+    end
+
+    defp emitted_source_of(name, opts) do
+      {:ok, template} = Gas.precompile(name, opts)
+      {:ok, module} = Codegen.module_for(name)
+
+      {src, _data, _covered, _nodes} =
+        Codegen.source(template.parsed_template, module, %{}, [name_modules: true] ++ opts)
+
+      src
+    end
+
     test "codegen: true attaches a module and renders identically", %{opts: opts} do
       {:ok, interpreted} = Gas.precompile("outer", opts)
       {:ok, compiled} = Gas.precompile("outer", [codegen: true] ++ opts)
@@ -860,11 +898,17 @@ defmodule Gas.Compiler.CodegenTest do
       assert both("{% assign a.b = 'v' %}[{{ a }}]", %{}) == "[]"
     end
 
-    test "a module that cannot be built reports :error instead of raising" do
+    # Diagnostics are held back so that losing a race to a name says nothing; a compile that
+    # failed on its own merits must still say so, which is the half that could go quiet unnoticed.
+    test "a module that cannot be built reports :error, and says why" do
       # A value with no source representation, so the render degrades instead of dying.
       tree = [%Gas.Object{argument: %Gas.Literal{value: self(), loc: nil}, filters: [], loc: nil}]
+      mod = Module.concat([Gas.CodegenCase, "Unbuildable#{System.unique_integer([:positive])}"])
 
-      assert Codegen.compile(tree, Gas.CodegenCase.Unbuildable) == :error
+      {result, log} = with_log(fn -> Codegen.compile(tree, mod) end)
+
+      assert result == :error
+      assert log =~ "would not compile", "a failed compile passed without a word"
     end
 
     test "a tag declaring it renders nothing is compiled away" do
@@ -973,7 +1017,7 @@ defmodule Gas.Compiler.CodegenTest do
       assert generated =~ "(true and", "a settled operand must emit its answer"
       refute generated =~ "(truthy(true)", "a settled operand must not compile to a call"
 
-      assert generated =~ ~r/truthy\((get|resolve|elem)\(/,
+      assert generated =~ ~r/truthy\((get1?|resolve|elem)\(/,
              "the unsettled operand must still be read at runtime"
     end
 
@@ -1189,6 +1233,58 @@ defmodule Gas.Compiler.CodegenTest do
       agreeing(@plain_context, strict_variables: true)
       agreeing(@plain_context, matcher_module: EveryValueMatcher)
       agreeing(@plain_context, scopes: [:vars])
+    end
+  end
+
+  # `blank` parses to `""`; what makes it more than that lives in `BinaryCondition`'s empty
+  # guards, which the compiled fast path for two binaries must not read more narrowly.
+  describe "`blank` means the same compiled and interpreted" do
+    for {label, value, blank?} <- [
+          {"nil", nil, true},
+          {"an empty string", "", true},
+          {"an empty list", [], true},
+          {"an empty map", %{}, true},
+          # gas reads `blank` as `""`, so whitespace is not blank here as it is in Shopify liquid
+          {"whitespace", "   ", false},
+          {"a non-empty string", "x", false},
+          {"a non-empty list", ["a"], false},
+          {"zero", 0, false}
+        ] do
+      test "#{label} against blank" do
+        vars = %{"v" => unquote(Macro.escape(value))}
+        {yes, no} = if unquote(blank?), do: {"Y", "N"}, else: {"N", "Y"}
+
+        assert both("{% if v == blank %}Y{% else %}N{% endif %}", vars) == yes
+        assert both("{% if v != blank %}Y{% else %}N{% endif %}", vars) == no
+      end
+    end
+  end
+
+  # `scan_scopes` treats a found nil as "keep looking", and a compiled read answers from the
+  # scope directly — which is where that rule is easiest to drop.
+  describe "a nil in one scope does not shadow another" do
+    defp scoped(context) do
+      template = compiled_template("[{{ n }}]")
+      {:ok, module} = Codegen.ensure_compiled(template.parsed_template)
+
+      {interpreted, _} = Gas.render(template.parsed_template, context, [])
+      {compiled, _} = module.render(context, [])
+
+      assert IO.iodata_to_binary(compiled) == IO.iodata_to_binary(interpreted)
+      IO.iodata_to_binary(compiled)
+    end
+
+    test "a nil var falls through to the counter that has a value" do
+      assert scoped(%Gas.Context{vars: %{"n" => nil}, counter_vars: %{"n" => 7}}) == "[7]"
+    end
+
+    test "a nil iteration var falls through to the var that has a value" do
+      assert scoped(%Gas.Context{iteration_vars: %{"n" => nil}, vars: %{"n" => "v"}}) == "[v]"
+    end
+
+    test "a real value in the nearer scope still wins" do
+      assert scoped(%Gas.Context{iteration_vars: %{"n" => "it"}, vars: %{"n" => "v"}}) == "[it]"
+      assert scoped(%Gas.Context{vars: %{"n" => "v"}, counter_vars: %{"n" => 7}}) == "[v]"
     end
   end
 
@@ -1484,6 +1580,87 @@ defmodule Gas.Compiler.CodegenTest do
 
       assert both(source, %{}) == "[hit]"
       assert_compiled(source)
+    end
+  end
+
+  defmodule VanishingFileSystem do
+    @behaviour Gas.FileSystem
+
+    @impl true
+    def read_template_file(name, table) do
+      if :ets.update_counter(table, name, 1, {name, 0}) > 1 do
+        raise "#{name} vanished mid-pass"
+      end
+
+      {:ok, "hello"}
+    end
+  end
+
+  describe "a template that brings a compile down" do
+    test "exits the pass with the reason that brought it down" do
+      table = :ets.new(:reads, [:public, :set])
+      parent = self()
+
+      # Trapping, as an application start callback is: untrapped, the linked task's crash kills
+      # the caller outright and the pass never gets to say which template did it.
+      spawn(fn ->
+        Process.flag(:trap_exit, true)
+
+        outcome =
+          try do
+            Gas.precompile_all(~w(a b),
+              codegen: true,
+              file_system: {VanishingFileSystem, table}
+            )
+
+            :finished_anyway
+          catch
+            :exit, reason -> {:exited, reason}
+          end
+
+        send(parent, outcome)
+      end)
+
+      assert_receive {:exited, reason}, 5_000
+      assert inspect(reason) =~ "vanished mid-pass"
+    end
+  end
+
+  describe "the compiler's own complaint about a content-named module" do
+    defp diagnostics(source) do
+      {_result, diagnostics} = Code.with_diagnostics(fn -> Code.compile_string(source) end)
+      diagnostics
+    end
+
+    test "a redefinition is suppressed, and only a redefinition" do
+      module = Module.concat([Gas.Compiled, :"c_#{System.unique_integer([:positive])}"])
+      source = "defmodule #{inspect(module)} do\n  def render(_c, _o), do: {[], nil}\nend\n"
+
+      assert diagnostics(source) == []
+      assert [redefinition] = diagnostics(source)
+      assert Codegen.redefined?(redefinition, module)
+
+      kept =
+        """
+        defmodule #{inspect(module)} do
+          def render(context, _o), do: {[], nil}
+        end
+        """
+        |> diagnostics()
+        |> Enum.reject(&Codegen.redefined?(&1, module))
+
+      assert [%{message: message}] = kept
+      assert message =~ "context"
+    end
+
+    test "a redefinition of one module is not suppressed for another" do
+      for_module = Module.concat([Gas.Compiled, :"c_#{System.unique_integer([:positive])}"])
+      source = "defmodule #{inspect(for_module)} do\nend\n"
+
+      diagnostics(source)
+      assert [redefinition] = diagnostics(source)
+
+      refute Codegen.redefined?(redefinition, Module.concat([Gas.Compiled, :c_other]))
     end
   end
 

@@ -170,30 +170,54 @@ defmodule Gas do
   orders the templates by the renders they name — callees first — so every caller finds its
   callee's module already built and never compiles one.
 
-  Returns `{name, result}` in the order they were compiled, `result` being whatever
-  `precompile/2` answered. A template that renders one of its own callers cannot be ordered; the
-  cycle is broken at whichever of them is reached first, and that one renders its callee by name
-  at run time instead of calling it directly.
+  Returns `{name, result}` callees first — every template before any that renders it — `result`
+  being whatever `precompile/2` answered. Templates that render none of each other are compiled
+  together, so that is an order of dependency rather than of time. A template that renders one of
+  its own callers cannot be placed; the cycle is broken at whichever of them is reached first, and
+  that one renders its callee by name at run time instead of calling it directly.
 
   A caller learns what its callee reads from the callee's tree, so the pass carries the trees it
   has parsed forward to the templates that render them — as an argument, ending with the pass,
   rather than in anything that outlives it.
+
+  Templates that render none of each other compile at once, `:max_concurrency` at a time,
+  defaulting to `System.schedulers_online/0`. Pass `1` for a pass that compiles one at a time.
   """
   @spec precompile_all([binary], keyword) :: [{binary, term}]
   def precompile_all(names, options \\ []) do
     options = Keyword.put(options, :name_modules, true)
-    ordered = names |> callees_of(options) |> callees_first(names)
+    levels = names |> callees_of(options) |> callees_first(names)
 
     # Forgotten before anything is built, so no caller ends up calling a module a later forget took.
-    Enum.each(ordered, &forget/1)
+    Enum.each(levels, fn level -> Enum.each(level, &forget/1) end)
 
-    {built, _trees} =
-      Enum.map_reduce(ordered, %{}, fn name, trees ->
-        result = precompile(name, Keyword.put(options, :trees, trees))
-        {{name, result}, remember(trees, name, result)}
-      end)
+    {built, _trees} = Enum.flat_map_reduce(levels, %{}, &compile_level(&1, &2, options))
 
     built
+  end
+
+  # Nothing in a level renders anything else in it, so the order within one cannot matter and the
+  # whole level compiles at once. Turning source into a module is nearly all of a pass's time.
+  defp compile_level(level, trees, options) do
+    concurrency = Keyword.get(options, :max_concurrency, System.schedulers_online())
+
+    options =
+      options |> Keyword.put(:trees, trees) |> Keyword.put(:max_concurrency, concurrency)
+
+    built =
+      level
+      |> Task.async_stream(&{&1, precompile(&1, options)},
+        max_concurrency: concurrency,
+        ordered: true,
+        timeout: :infinity
+      )
+      |> Enum.map(fn
+        {:ok, result} -> result
+        # Carried rather than matched against, so a template that brings a compile down says why.
+        {:exit, reason} -> exit(reason)
+      end)
+
+    {built, Enum.reduce(built, trees, fn {name, result}, acc -> remember(acc, name, result) end)}
   end
 
   defp remember(trees, name, {:ok, %Template{parsed_template: tree}}),
@@ -251,24 +275,22 @@ defmodule Gas do
     end
   end
 
-  defp callees_first(callees, names) do
-    {ordered, _done} =
-      Enum.reduce(names, {[], MapSet.new()}, &visit(&1, &2, callees, MapSet.new()))
+  # Grouped, not merely ordered: a level is every template whose callees are already built, so it
+  # is safe to compile alongside the rest of its level.
+  defp callees_first(callees, names), do: levels(names, MapSet.new(), [], callees)
 
-    Enum.reverse(ordered)
-  end
+  defp levels([], _built, acc, _callees), do: Enum.reverse(acc)
 
-  defp visit(name, {ordered, done}, callees, open) do
-    if MapSet.member?(done, name) or MapSet.member?(open, name) do
-      {ordered, done}
-    else
-      {ordered, done} =
-        callees
-        |> Map.get(name, [])
-        |> Enum.reduce({ordered, done}, &visit(&1, &2, callees, MapSet.put(open, name)))
+  defp levels(left, built, acc, callees) do
+    {ready, rest} =
+      Enum.split_with(left, fn name ->
+        callees |> Map.get(name, []) |> Enum.all?(&MapSet.member?(built, &1))
+      end)
 
-      {[name | ordered], MapSet.put(done, name)}
-    end
+    # Nothing ready means a cycle. Taking one breaks it, and that one reaches its callee by name.
+    {ready, rest} = if ready == [], do: Enum.split(left, 1), else: {ready, rest}
+
+    levels(rest, MapSet.union(built, MapSet.new(ready)), [ready | acc], callees)
   end
 
   # `:name_modules` asks for a module called after the file. Only `precompile_all/2` sets it,

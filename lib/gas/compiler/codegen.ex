@@ -7,9 +7,9 @@ defmodule Gas.Compiler.Codegen do
   map: `{% increment %}` writes `counter_vars`, `{% for %}` writes
   `iteration_vars` and `registers`, and a read resolves across all three.
 
-  Uncovered nodes fall back to `Gas.render/3` and a raise re-runs the whole tree
-  through the interpreter, so output is identical either way. `source/2` reports
-  how much of a tree compiled.
+  A node the compiler cannot take is emitted as a call back into the interpreter
+  and travels in `@nodes`; `source/4` reports how much of a tree compiled, and a
+  module with nothing to interpret carries no `@nodes` entry points at all.
   """
 
   alias Gas.{Literal, Object, Text, Variable}
@@ -26,9 +26,9 @@ defmodule Gas.Compiler.Codegen do
   # Bound at render time, never by name in the tree, so no entry extraction can see them.
   @runtime_bound ~w(forloop parentloop tablerowloop)
 
-  # Filters safe at compile time: deterministic, depending only on their arguments.
   @prefix "Elixir.Gas.Compiled."
 
+  # Filters safe at compile time: deterministic, depending only on their arguments.
   @pure_filters ~w(append prepend upcase downcase capitalize strip lstrip rstrip
                    join push push_if split first last size default replace
                    replace_first remove remove_first plus minus times divided_by
@@ -170,7 +170,11 @@ defmodule Gas.Compiler.Codegen do
   # A loaded module is never purged, and liquid-bearing settings are merchant-editable.
   defp compile_hashed(tree, known, opts) do
     if compiled_count() < module_limit(opts) do
-      compile(tree, module_name(content_name(tree, known, opts)), known, opts)
+      module = module_name(content_name(tree, known, opts))
+
+      # Checked again here: the caller looked before this, and another task may have finished the
+      # same content since. Recompiling it would only redefine identical code, loudly.
+      with :error <- loaded(module), do: compile_content(tree, module, known, opts)
     else
       Gas.Compiler.Runtime.log_once({__MODULE__, :limit_reported}, fn ->
         "gas: the module limit of #{module_limit(opts)} for liquid with no name of its own is " <>
@@ -178,6 +182,21 @@ defmodule Gas.Compiler.Codegen do
       end)
 
       :error
+    end
+  end
+
+  # Losing a race is not a failure, so neither it nor the compiler's own complaint about the name
+  # is reported; only a wait that never ends in a module is.
+  defp compile_content(tree, module, known, opts) do
+    case attempt(tree, module, known, opts) do
+      {{:ok, _module}, _diagnostics} = built ->
+        reported(built, &redefined?(&1, module))
+
+      {{:error, formatted}, _diagnostics} = failed ->
+        with :error <- awaited(module, opts) do
+          reported(failed)
+          refused(module, formatted)
+        end
     end
   end
 
@@ -195,6 +214,28 @@ defmodule Gas.Compiler.Codegen do
     @content_prefix <> Base.encode16(digest, case: :lower)
   end
 
+  @name_wait_ms 5
+  @name_wait_tries 200
+
+  # Same name means same source, so the loser waits for the winner rather than emitting a call to
+  # a module that never landed. Nothing races a pass of one, which reports its failure at once.
+  defp awaited(module, opts) do
+    if Keyword.get(opts, :max_concurrency, 1) > 1,
+      do: waited(module, @name_wait_tries),
+      else: :error
+  end
+
+  defp waited(_module, 0), do: :error
+
+  defp waited(module, tries) do
+    if :erlang.module_loaded(module) do
+      {:ok, module}
+    else
+      Process.sleep(@name_wait_ms)
+      waited(module, tries - 1)
+    end
+  end
+
   # Counted off the modules themselves, so nothing holds a tally. Read per compile, never per look.
   defp compiled_count do
     prefix = @prefix <> @content_prefix
@@ -202,8 +243,8 @@ defmodule Gas.Compiler.Codegen do
     Enum.count(:erlang.loaded(), &String.starts_with?(Atom.to_string(&1), prefix))
   end
 
-  # How many modules liquid with no name of its own may mint. A template compiled under its own
-  # path is not counted and cannot be crowded out by the liquid a merchant types into a setting.
+  # How many modules liquid with no name of its own may mint; a template named after its path is
+  # not counted. A parallel pass reads the count before compiling, so the ceiling is approximate.
   defp module_limit(opts) do
     Keyword.get_lazy(opts, :module_limit, fn ->
       Application.get_env(:gas, :max_compiled_modules, @module_limit)
@@ -213,12 +254,40 @@ defmodule Gas.Compiler.Codegen do
   @doc "Builds and loads a module for `tree`. Returns `{:ok, module}` or `:error`."
   @spec compile(list, module, map, keyword) :: {:ok, module} | :error
   def compile(tree, mod, known \\ %{}, opts \\ []) do
+    case reported(attempt(tree, mod, known, opts)) do
+      {:ok, module} -> {:ok, module}
+      {:error, formatted} -> refused(mod, formatted)
+    end
+  end
+
+  # The compiler prints its diagnostics before raising, so they are held here and printed by
+  # whoever decides the compile actually failed.
+  defp attempt(tree, mod, known, opts) do
+    Code.with_diagnostics(fn -> guarded_load(tree, mod, known, opts) end)
+  end
+
+  defp guarded_load(tree, mod, known, opts) do
     {:ok, load(List.wrap(tree), mod, known, opts)}
   rescue
-    error -> refused(mod, Exception.format(:error, error, __STACKTRACE__))
+    error -> {:error, Exception.format(:error, error, __STACKTRACE__)}
   catch
-    kind, value -> refused(mod, Exception.format(kind, value, __STACKTRACE__))
+    kind, value -> {:error, Exception.format(kind, value, __STACKTRACE__)}
   end
+
+  defp reported({result, diagnostics}, ignore \\ fn _diagnostic -> false end) do
+    diagnostics |> Enum.reject(ignore) |> Enum.each(&Code.print_diagnostic/1)
+    result
+  end
+
+  # A content-named module redefined is the same source by construction, so the compiler's notice
+  # says nothing. Anything else it has to say about the module is still printed.
+  @doc false
+  def redefined?(%{severity: :warning, message: message}, module),
+    do:
+      String.contains?(message, "redefining module") and
+        String.contains?(message, inspect(module))
+
+  def redefined?(_diagnostic, _module), do: false
 
   @doc false
   def load(tree, mod, known, opts) do
@@ -230,7 +299,6 @@ defmodule Gas.Compiler.Codegen do
     module
   end
 
-  # Silence here once cost three templates their compiled form for a whole release.
   defp refused(mod, formatted) do
     Gas.Compiler.Runtime.log_once({__MODULE__, :refused, mod}, fn ->
       "gas: #{inspect(mod)} would not compile, so it renders interpreted:\n#{formatted}"
@@ -286,21 +354,15 @@ defmodule Gas.Compiler.Codegen do
     nodes = List.to_tuple(Enum.reverse(state.data))
     constant = state.const_bodies[entry]
 
+    # Uncommented on purpose: what `@nodes`, `__gas_constant__` and `render/2`'s guard are for is
+    # a fact about the compiler, and belongs here rather than in each module it emits.
     src = """
     defmodule #{inspect(mod)} do
       @moduledoc false
       import Gas.Compiler.Runtime, warn: false
-      # Every node this module runs rather than compiles travels inside it: a loaded module that
-      # needs a lookup elsewhere before it can render is not really loaded.
-      @nodes #{literal(nodes)}
-
-      # What this module always renders, or nil where that varies. A caller inlining it asks the
-      # module, which is where the answer belongs — it is a fact about this code.
+    #{nodes_attribute(nodes)}
       def __gas_constant__, do: #{constant || "nil"}
 
-      # Generated code assumes the default matcher, scopes and lax variables. A context holding
-      # anything else is one this module was not built for, and saying so is the whole answer:
-      # rendering it some other way here would be a slower module pretending to be this one.
       def render(%Gas.Context{matcher_module: Gas.Matcher, strict_variables: false} = ctx, opts) do
         if ctx.scopes == Gas.Context.default_scopes() do
           #{extraction}
@@ -316,6 +378,21 @@ defmodule Gas.Compiler.Codegen do
       end
 
     #{state.funs |> Enum.reverse() |> live_funs(entry) |> Enum.join("\n")}
+    #{node_entry_points(nodes)}
+    end
+    """
+
+    {src, nodes, state.nodes - state.fallbacks, state.nodes, constant}
+  end
+
+  # A template every node of which compiled holds nothing to run, so it carries neither.
+  defp nodes_attribute({}), do: ""
+  defp nodes_attribute(nodes), do: "  @nodes #{literal(nodes)}\n"
+
+  defp node_entry_points({}), do: ""
+
+  defp node_entry_points(_nodes) do
+    """
       def interpret(index, ctx, opts) do
         Gas.render([elem(@nodes, index)], ctx, opts)
       end
@@ -323,83 +400,7 @@ defmodule Gas.Compiler.Codegen do
       def dispatch(index, ctx, opts) do
         Gas.Renderable.render(elem(@nodes, index), ctx, opts)
       end
-
-      # Mirrors Gas.Context.scan_scopes: a found-nil keeps looking, not wins.
-      def get(c, keys, o), do: res(lookup(c, keys), c, o)
-
-      def lookup(%{iteration_vars: iteration} = c, keys) when map_size(iteration) == 0 do
-        case walk(c.vars, keys) do
-          nil -> counters(c, keys)
-          value -> value
-        end
-      end
-
-      def lookup(c, keys) do
-        case walk(c.iteration_vars, keys) do
-          nil ->
-            case walk(c.vars, keys) do
-              nil -> counters(c, keys)
-              value -> value
-            end
-
-          value ->
-            value
-        end
-      end
-
-      def counters(%{counter_vars: counters}, _keys) when map_size(counters) == 0, do: nil
-      def counters(c, keys), do: walk(c.counter_vars, keys)
-
-      def walk(value, []), do: value
-
-      def walk(value, [key]) when is_map(value) and not is_struct(value) do
-        case value do
-          %{^key => found} -> found
-          _ when key == "size" -> map_size(value)
-          _ -> nil
-        end
-      end
-
-      def walk(value, [key | rest]) when is_map(value) and not is_struct(value) do
-        case value do
-          %{^key => found} -> walk(found, rest)
-          _ when key == "size" -> walk(map_size(value), rest)
-          _ -> nil
-        end
-      end
-
-      def walk(value, keys), do: unwrap(Gas.Matcher.match(value, keys))
-
-      def unwrap({:ok, value}), do: value
-      def unwrap(_other), do: nil
-
-      def put_var(c, name, value), do: %{c | vars: Map.put(c.vars, name, value)}
-
-      # Only a setting holding liquid needs the context to finish it; everything else is itself.
-      def res(value, _c, _o) when is_binary(value), do: value
-      def res(%Gas.InterpolatedString{} = value, c, o), do: resolve(value, c, o)
-      def res(value, _c, _o), do: value
-
-      def str(value) when is_binary(value), do: value
-      def str(value), do: Gas.Argument.stringify!(value)
-
-      def truthy(nil), do: false
-      def truthy(false), do: false
-      def truthy(_value), do: true
-
-      # Two binaries reach only evaluator clauses that are Erlang equality.
-      def compare(left, :==, right) when is_binary(left) and is_binary(right), do: left == right
-      def compare(left, :!=, right) when is_binary(left) and is_binary(right), do: left != right
-
-      def compare(left, operator, right) do
-        {:ok, result} = Gas.BinaryCondition.eval({left, operator, right})
-        result
-      end
-
-    end
     """
-
-    {src, nodes, state.nodes - state.fallbacks, state.nodes, constant}
   end
 
   # A branch folded to a constant orphans its function, so unreachable defs go.
@@ -592,8 +593,11 @@ defmodule Gas.Compiler.Codegen do
   # Neighbouring constants join with `<>`, which the compiler folds into one literal.
   # A node that rendered nothing contributes nothing: keeping its `[]` only lengthens the
   # iolist the caller walks, and an empty literal folds into the constant beside it.
+  # Steps that render nothing are dropped before the constants are grouped, so an `{% assign %}`
+  # between two pieces of static text cannot leave them in separate cells of the output list.
   defp merge_constants(outs) do
     outs
+    |> Enum.reject(fn {out, _const?} -> out in ["[]", ~s("")] end)
     |> Enum.chunk_by(&elem(&1, 1))
     |> Enum.flat_map(&merge_chunk/1)
     |> Enum.reject(&(&1 in ["[]", ~s("")]))
@@ -603,8 +607,13 @@ defmodule Gas.Compiler.Codegen do
 
   defp merge_chunk(chunk) do
     case Enum.reject(chunk, &(elem(&1, 0) == "[]")) do
-      [] -> []
-      kept -> [Enum.map_join(kept, " <> ", &literal_source/1)]
+      [] ->
+        []
+
+      # `<>` rather than one merged literal: the BEAM compiler folds both to the same
+      # `{:literal, ...}`, so reading the sources back to merge them here buys nothing.
+      kept ->
+        [Enum.map_join(kept, " <> ", &literal_source/1)]
     end
   end
 
@@ -1691,6 +1700,9 @@ defmodule Gas.Compiler.Codegen do
     {:ok, "resolve(walk(#{binding}, #{literal([last])}), #{ctx}, o)", state}
   end
 
+  defp emit_hoisted([key], ctx, state) when is_binary(key),
+    do: {:ok, "get1(#{ctx}, #{literal(key)}, o)", state}
+
   defp emit_hoisted(keys, ctx, state), do: {:ok, "get(#{ctx}, #{literal(keys)}, o)", state}
 
   # `{% assign s = block.settings %}` makes every `s.x` an alias for `block.settings.x`. Only a
@@ -1925,6 +1937,9 @@ defmodule Gas.Compiler.Codegen do
       end)
 
     case keys do
+      {:ok, [], state} when is_binary(identifier) ->
+        {:ok, "get1(#{ctx}, #{literal(identifier)}, o)", state}
+
       {:ok, codes, state} when is_binary(identifier) ->
         {:ok, "get(#{ctx}, [#{Enum.join([literal(identifier) | codes], ", ")}], o)", state}
 

@@ -96,11 +96,17 @@ defmodule Gas.Compiler.Interpolation do
 
   defp walk_vars(value, _opts), do: value
 
+  # Both openers start with `{`, and almost no var a host hands over holds either; one scan for
+  # that rejects the common string without paying for two.
   defp parse_if_interpolated(value, opts) do
-    if String.contains?(value, "{{") or String.contains?(value, "{%") do
-      parse_value(value, opts)
+    case :binary.match(value, "{") do
+      :nomatch -> nil
+      _found -> if opens_liquid?(value), do: parse_value(value, opts)
     end
   end
+
+  defp opens_liquid?(value),
+    do: String.contains?(value, "{{") or String.contains?(value, "{%")
 
   defp parse_value(value, opts) do
     case Gas.parse(value, opts) do

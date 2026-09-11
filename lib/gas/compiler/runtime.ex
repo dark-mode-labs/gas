@@ -1,9 +1,8 @@
 defmodule Gas.Compiler.Runtime do
   @moduledoc """
-  The cold operations `Gas.Compiler.Codegen` emits calls to.
-
-  The hot path — variable lookup, assign, stringify, compare — is emitted inline
-  in each generated module instead.
+  Everything `Gas.Compiler.Codegen` emits calls to, the hot path included:
+  variable lookup, assign, stringify and compare live here rather than being
+  copied into every module it emits.
   """
 
   alias Gas.{Context, Template}
@@ -92,6 +91,110 @@ defmodule Gas.Compiler.Runtime do
     :ok
   end
 
+  # What generated modules call, all of it mirroring Gas.Context.scan_scopes: a found nil keeps
+  # looking rather than winning.
+  @doc false
+  def get(c, keys, o), do: res(lookup(c, keys), c, o)
+
+  # One literal key is a map match rather than the three calls the general path takes; a nil, a
+  # miss and `size` are not answers here and defer to it.
+  @doc false
+  def get1(%{iteration_vars: it} = c, key, o) when map_size(it) == 0 do
+    case c.vars do
+      %{^key => value} when value != nil -> res(value, c, o)
+      _ -> res(lookup(c, [key]), c, o)
+    end
+  end
+
+  def get1(c, key, o) do
+    case c.iteration_vars do
+      %{^key => value} when value != nil ->
+        res(value, c, o)
+
+      _ ->
+        case c.vars do
+          %{^key => value} when value != nil -> res(value, c, o)
+          _ -> res(lookup(c, [key]), c, o)
+        end
+    end
+  end
+
+  @doc false
+  def lookup(%{iteration_vars: iteration} = c, keys) when map_size(iteration) == 0 do
+    case walk(c.vars, keys) do
+      nil -> counters(c, keys)
+      value -> value
+    end
+  end
+
+  def lookup(c, keys) do
+    case walk(c.iteration_vars, keys) do
+      nil ->
+        case walk(c.vars, keys) do
+          nil -> counters(c, keys)
+          value -> value
+        end
+
+      value ->
+        value
+    end
+  end
+
+  defp counters(%{counter_vars: counters}, _keys) when map_size(counters) == 0, do: nil
+  defp counters(c, keys), do: walk(c.counter_vars, keys)
+
+  @doc false
+  def walk(value, []), do: value
+
+  def walk(value, [key]) when is_map(value) and not is_struct(value) do
+    case value do
+      %{^key => found} -> found
+      _ when key == "size" -> map_size(value)
+      _ -> nil
+    end
+  end
+
+  def walk(value, [key | rest]) when is_map(value) and not is_struct(value) do
+    case value do
+      %{^key => found} -> walk(found, rest)
+      _ when key == "size" -> walk(map_size(value), rest)
+      _ -> nil
+    end
+  end
+
+  def walk(value, keys), do: unwrap(Gas.Matcher.match(value, keys))
+
+  defp unwrap({:ok, value}), do: value
+  defp unwrap(_other), do: nil
+
+  @doc false
+  def put_var(c, name, value), do: %{c | vars: Map.put(c.vars, name, value)}
+
+  # Only a setting holding liquid needs the context to finish it; everything else is itself.
+  @doc false
+  def res(value, _c, _o) when is_binary(value), do: value
+  def res(%Gas.InterpolatedString{} = value, c, o), do: resolve(value, c, o)
+  def res(value, _c, _o), do: value
+
+  @doc false
+  def str(value) when is_binary(value), do: value
+  def str(value), do: Gas.Argument.stringify!(value)
+
+  @doc false
+  def truthy(nil), do: false
+  def truthy(false), do: false
+  def truthy(_value), do: true
+
+  # Two binaries reach only evaluator clauses that are Erlang equality.
+  @doc false
+  def compare(left, :==, right) when is_binary(left) and is_binary(right), do: left == right
+  def compare(left, :!=, right) when is_binary(left) and is_binary(right), do: left != right
+
+  def compare(left, operator, right) do
+    {:ok, result} = Gas.BinaryCondition.eval({left, operator, right})
+    result
+  end
+
   def forloop(index, length, parentloop, name) do
     %{
       "index" => index + 1,
@@ -143,7 +246,7 @@ defmodule Gas.Compiler.Runtime do
     instrument(opts, template, fn ->
       {out, errors} =
         reusing(template, vars, opts, fn ->
-          {out, inner} = module.render(inner_context(vars, opts), opts)
+          {out, inner} = module.render(inner_context(vars), opts)
           {out, inner.errors}
         end)
 
@@ -190,7 +293,7 @@ defmodule Gas.Compiler.Runtime do
     |> Enum.with_index(0)
     |> Enum.reduce({[], context}, fn {element, index}, {acc, ctx} ->
       inner = %{
-        inner_context(%{name => element}, opts)
+        inner_context(%{name => element})
         | iteration_vars: %{"forloop" => render_forloop(index, length)}
       }
 
@@ -215,17 +318,9 @@ defmodule Gas.Compiler.Runtime do
 
   def instrument(_opts, _template, fun), do: fun.()
 
-  # The default is built once: `Keyword.get/3` evaluates it on every callee render otherwise.
-  @default_scopes Context.default_scopes()
-
-  defp inner_context(vars, opts) do
-    %Context{
-      vars: vars,
-      matcher_module: Keyword.get(opts, :matcher_module, Gas.Matcher),
-      scopes: Keyword.get(opts, :scopes, @default_scopes),
-      strict_variables: Keyword.get(opts, :strict_variables, false)
-    }
-  end
+  # Only compiled code reaches here, and only when `Gas.render/3` found the context default, so
+  # reading the three options a callee would raise over could not answer anything else.
+  defp inner_context(vars), do: %Context{vars: vars}
 
   # `render for` builds a smaller forloop than `{% for %}` does.
   defp render_forloop(index, length) do
@@ -332,7 +427,7 @@ defmodule Gas.Compiler.Runtime do
 
   defp dispatch_partial(module, name, vars, opts, loc) do
     if :erlang.module_loaded(module) do
-      {out, inner} = module.render(inner_context(vars, opts), opts)
+      {out, inner} = module.render(inner_context(vars), opts)
       {out, inner.errors}
     else
       {[], [uncompiled_partial(module, name, loc)]}
