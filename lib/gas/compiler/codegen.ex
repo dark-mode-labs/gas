@@ -152,7 +152,15 @@ defmodule Gas.Compiler.Codegen do
   # which is the only reason the path is touched at all.
   defp module_name(name), do: :erlang.binary_to_atom(@prefix <> flatten(name))
 
-  defp flatten(name), do: String.replace(name, ["/", "-", ".", " "], "_")
+  # Hand-rolled: a render by name runs this per item, where `String.replace` dominates.
+  defp flatten(name), do: IO.iodata_to_binary(flatten(name, []))
+
+  defp flatten(<<>>, acc), do: :lists.reverse(acc)
+
+  defp flatten(<<char, rest::binary>>, acc) when char in [?/, ?-, ?., ?\s],
+    do: flatten(rest, [?_ | acc])
+
+  defp flatten(<<char, rest::binary>>, acc), do: flatten(rest, [char | acc])
 
   @doc """
   The module the template named `name` compiled into, or `:error` if nothing ever compiled it.
@@ -428,14 +436,47 @@ defmodule Gas.Compiler.Codegen do
     ~r/\b(b\d+)\(/ |> Regex.scan(fun) |> MapSet.new(&Enum.at(&1, 1))
   end
 
+  defp param_list(params), do: Enum.map_join(params, "", fn {_name, p} -> ", #{p}" end)
+
+  defp param_discards(params),
+    do: Enum.map_join(params, "", fn {_name, p} -> "\n        _ = #{p}" end)
+
+  defp body_call(fun, state),
+    do: Enum.map_join(Map.get(state.body_args, fun, []), "", &", #{&1}")
+
+  # A pure body is written where its parameters do not exist, so each becomes the caller's own name.
+  defp inlined(expression, fun, state) do
+    state.body_args
+    |> Map.get(fun, [])
+    |> Enum.with_index()
+    |> Enum.reduce(expression, fn {arg, i}, acc ->
+      Regex.replace(~r/(?<![a-z0-9_])p#{i}(?![0-9a-z_])/, acc, arg)
+    end)
+  end
+
   # ---- a node list becomes a function returning {iodata, context} ---------
   defp body(nodes, state) do
     name = "b#{state.n}"
     outer_hoists = state.hoists
     outer_locals = state.locals
-    state = %{state | n: state.n + 1, hoists: [], locals: %{}}
+
+    # A name the caller holds in a local travels as a parameter, not a read of the context.
+    inherited = Enum.sort_by(outer_locals, &elem(&1, 0))
+    params = Enum.with_index(inherited, fn {var, _v}, i -> {var, "p#{i}"} end)
+
+    outer_pending = state.pending
+
+    state = %{
+      state
+      | n: state.n + 1,
+        hoists: [],
+        pending: %{},
+        locals: Map.new(params),
+        body_args: Map.put(state.body_args, name, Enum.map(inherited, &elem(&1, 1)))
+    }
 
     {steps, state, slot} = emit_nodes(nodes, [], state, 0)
+    {steps, state, slot} = close_pending(steps, state, slot)
 
     prologue =
       Enum.map(state.hoists, fn {prefix, binding} ->
@@ -463,19 +504,26 @@ defmodule Gas.Compiler.Codegen do
 
     fun =
       if Enum.any?(steps, & &1.throws?) do
-        incremental_body(name, steps, "c#{slot}", prologue)
+        incremental_body(name, steps, "c#{slot}", prologue, params)
       else
         """
-          defp #{name}(c0, o, e) do
+          defp #{name}(c0, o, e#{param_list(params)}) do
             _ = o
-            _ = e
+            _ = e#{param_discards(params)}
             #{Enum.join(lines, "\n        ")}
             {[#{Enum.join(merged, ", ")}], c#{slot}}
           end
         """
       end
 
-    {name, %{state | funs: [fun | state.funs], hoists: outer_hoists, locals: outer_locals}}
+    {name,
+     %{
+       state
+       | funs: [fun | state.funs],
+         hoists: outer_hoists,
+         locals: outer_locals,
+         pending: outer_pending
+     }}
   end
 
   defp emit_capture(inner, name, state, slot) do
@@ -484,7 +532,8 @@ defmodule Gas.Compiler.Codegen do
     local = "v#{slot}"
 
     line =
-      "{cap#{slot}, cc#{slot}} = #{fun}(c#{slot}, o, e); #{local} = IO.iodata_to_binary(cap#{slot}); " <>
+      "{cap#{slot}, cc#{slot}} = #{fun}(c#{slot}, o, e#{body_call(fun, state)}); " <>
+        "#{local} = IO.iodata_to_binary(cap#{slot}); " <>
         "c#{slot + 1} = put_var(cc#{slot}, #{literal(name)}, #{local})"
 
     kept =
@@ -504,7 +553,8 @@ defmodule Gas.Compiler.Codegen do
         emit_nodes(branch ++ rest, steps, state, slot)
 
       :error ->
-        state = %{state | nodes: state.nodes + 1, locals: kept_locals(node, state.locals)}
+        {steps, state, slot} = flush_pending(node, steps, state, slot)
+        state = %{state | nodes: state.nodes + 1, locals: entering_locals(node, state.locals)}
         {line, out, state, next} = emit(node, state, slot)
         state = %{state | locals: kept_locals(node, state.locals)}
 
@@ -519,6 +569,66 @@ defmodule Gas.Compiler.Codegen do
         emit_nodes(rest, [step | steps], state, next)
     end
   end
+
+  # Assigns wait here, so a run of them costs one map write; anything reading the context ends it.
+  defp flush_pending(_node, steps, %{pending: pending} = state, slot)
+       when map_size(pending) == 0,
+       do: {steps, state, slot}
+
+  defp flush_pending(node, steps, %{pending: pending} = state, slot) do
+    if reads_context?(node, pending) do
+      {[pending_step(pending, slot) | steps], %{state | pending: %{}}, slot + 1}
+    else
+      {steps, state, slot}
+    end
+  end
+
+  defp pending_step(pending, slot) do
+    writes =
+      pending
+      |> Enum.sort()
+      |> Enum.map_join(", ", fn {name, local} -> "#{literal(name)} => #{local}" end)
+
+    %{
+      line: "c#{slot + 1} = %{c#{slot} | vars: Map.merge(c#{slot}.vars, %{#{writes}})}",
+      out: "[]",
+      const?: false,
+      throws?: false,
+      ctx: "c#{slot + 1}"
+    }
+  end
+
+  # A body hands its context back, so whatever is still pending has to land before it does.
+  defp close_pending(steps, %{pending: pending} = state, slot) when map_size(pending) == 0,
+    do: {steps, state, slot}
+
+  defp close_pending(steps, %{pending: pending} = state, slot),
+    do: {steps ++ [pending_step(pending, slot)], %{state | pending: %{}}, slot + 1}
+
+  # A path through a pending name goes back to the context, so that name has to have landed.
+  defp reads_context?(%AssignTag{} = node, pending), do: reads_through?(node, pending)
+  defp reads_context?(%Gas.Text{}, _pending), do: false
+  defp reads_context?(_node, _pending), do: true
+
+  defp reads_through?(node, pending),
+    do: Enum.any?(walked_roots(node, []), &is_map_key(pending, &1))
+
+  defp walked_roots(%Variable{identifier: id, accesses: accesses}, acc),
+    do: if(accesses == [], do: acc, else: [id | acc])
+
+  defp walked_roots(list, acc) when is_list(list),
+    do: Enum.reduce(list, acc, &walked_roots(&1, &2))
+
+  defp walked_roots(%{__struct__: _} = struct, acc),
+    do: struct |> Map.from_struct() |> walked_roots(acc)
+
+  defp walked_roots(tuple, acc) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> walked_roots(acc)
+
+  defp walked_roots(map, acc) when is_map(map),
+    do: map |> Map.values() |> Enum.reduce(acc, &walked_roots(&1, &2))
+
+  defp walked_roots(_other, acc), do: acc
 
   # A condition the bindings settle contributes its branch to this body rather than a function of
   # its own, so what the branch assigns keeps folding into the nodes that follow it.
@@ -542,7 +652,7 @@ defmodule Gas.Compiler.Codegen do
   defp settled_branch(_node, _state), do: :error
 
   # `break`/`continue` carry prior output, so a throwing body hands its accumulator on.
-  defp incremental_body(name, steps, exit_ctx, prologue) do
+  defp incremental_body(name, steps, exit_ctx, prologue, params) do
     {body, _acc} =
       steps
       |> Enum.with_index(1)
@@ -560,9 +670,9 @@ defmodule Gas.Compiler.Codegen do
       end)
 
     """
-      defp #{name}(c0, o, e) do
+      defp #{name}(c0, o, e#{param_list(params)}) do
         _ = o
-        _ = e
+        _ = e#{param_discards(params)}
         #{Enum.join(prologue, "\n        ")}
         acc0 = []
         #{body |> Enum.reject(&(&1 == "")) |> Enum.join("\n        ")}
@@ -666,10 +776,15 @@ defmodule Gas.Compiler.Codegen do
         name = to_string(target)
         state = rebind(state, name, const_assign(obj, state.known))
         local = "v#{slot}"
-        state = %{state | locals: Map.put(state.locals, name, local)}
 
-        {"#{local} = #{code}\n        c#{slot + 1} = put_var(c#{slot}, #{literal(name)}, #{local})",
-         "[]", state, slot + 1}
+        state = %{
+          state
+          | locals: Map.put(state.locals, name, local),
+            pending: Map.put(state.pending, name, local)
+        }
+
+        {"#{local} = #{code}
+        c#{slot + 1} = c#{slot}", "[]", state, slot + 1}
 
       :error ->
         fallback(state, slot, node)
@@ -754,18 +869,19 @@ defmodule Gas.Compiler.Codegen do
         {"", literal, state, slot}
 
       expression = state.pure_bodies[fun] ->
-        {"", expression, state, slot}
+        {"", inlined(expression, fun, state), state, slot}
 
       true ->
-        {"{o#{slot}, c#{slot + 1}} = #{fun}(c#{slot}, o, e)", "o#{slot}", state, slot + 1}
+        {"{o#{slot}, c#{slot + 1}} = #{fun}(c#{slot}, o, e#{body_call(fun, state)})", "o#{slot}",
+         state, slot + 1}
     end
   end
 
   # A call to a body, or the body itself where it needs no context to run.
   defp branch(fun, ctx, state) do
     case state.pure_bodies[fun] do
-      nil -> "#{fun}(#{ctx}, o, e)"
-      expression -> "{#{expression}, #{ctx}}"
+      nil -> "#{fun}(#{ctx}, o, e#{body_call(fun, state)})"
+      expression -> "{#{inlined(expression, fun, state)}, #{ctx}}"
     end
   end
 
@@ -775,7 +891,9 @@ defmodule Gas.Compiler.Codegen do
 
     case state.const_bodies[fun] do
       nil ->
-        line = "{o#{slot}, _} = #{fun}(c#{slot}, o, e)\n        c#{slot + 1} = c#{slot}"
+        line =
+          "{o#{slot}, _} = #{fun}(c#{slot}, o, e#{body_call(fun, state)})\n        c#{slot + 1} = c#{slot}"
+
         {line, "o#{slot}", state, slot + 1}
 
       literal ->
@@ -809,7 +927,7 @@ defmodule Gas.Compiler.Codegen do
         |> Enum.reduce({branch(else_fun, "c#{slot}", state), state}, fn {test, branch},
                                                                         {acc, st} ->
           {fun, st} = conditional_body(List.wrap(branch), st)
-          {"if #{test} do #{fun}(c#{slot}, o, e) else #{acc} end", st}
+          {"if #{test} do #{fun}(c#{slot}, o, e#{body_call(fun, st)}) else #{acc} end", st}
         end)
 
       line = "#{subject} = #{code}\n        {o#{slot}, c#{slot + 1}} = #{tail}"
@@ -857,8 +975,14 @@ defmodule Gas.Compiler.Codegen do
          {:ok, limit_code, state} <- loop_parameter(node.parameters[:limit], "c#{slot}", state) do
       # The body runs repeatedly, so anything it rebinds cannot stay folded from before.
       outer = state.known
-      {body_fun, state} = conditional_body(List.wrap(node.body), loop_known(state, node.body))
-      state = loop_known(%{state | known: outer}, node.body)
+
+      {body_fun, state} =
+        conditional_body(
+          List.wrap(node.body),
+          loop_known(state, node.body, [key | @runtime_bound])
+        )
+
+      state = loop_known(%{state | known: outer}, node.body, [])
       {else_fun, state} = conditional_body(List.wrap(node.else_body), state)
       for_name = "#{key}-#{node.enumerable}"
       controls? = loop_control?(node.body)
@@ -875,7 +999,7 @@ defmodule Gas.Compiler.Codegen do
         if controls? do
           """
           try do
-                            {out, cc} = #{body_fun}(cc, o, e)
+                            {out, cc} = #{body_fun}(cc, o, e#{body_call(body_fun, state)})
                             {cc, [acc, out]}
                           catch
                             {:break_exp, r, c} -> throw({:gas_cg_break, [acc, r], c})
@@ -884,7 +1008,7 @@ defmodule Gas.Compiler.Codegen do
           """
         else
           """
-          {out, cc} = #{body_fun}(cc, o, e)
+          {out, cc} = #{body_fun}(cc, o, e#{body_call(body_fun, state)})
                           {cc, [acc, out]}\
           """
         end
@@ -924,7 +1048,7 @@ defmodule Gas.Compiler.Codegen do
       {o#{slot}, c#{slot + 1}} =
                 case for_prepare(enumerate(#{enum_code}), #{offset_code}, #{limit_code}, #{node.reversed == true}, c#{slot}, #{literal(for_name)}) do
                   {:ok, [], ctx#{slot}} ->
-                    #{else_fun}(ctx#{slot}, o, e)
+                    #{else_fun}(ctx#{slot}, o, e#{body_call(else_fun, state)})
 
                   {:ok, list#{slot}, ctx#{slot}} ->
                     len#{slot} = length(list#{slot})
@@ -974,7 +1098,7 @@ defmodule Gas.Compiler.Codegen do
 
           case st.const_bodies[fun] do
             nil ->
-              step = "{ou#{slot}_#{index}, #{next}} = #{fun}(#{bind}, o, e)"
+              step = "{ou#{slot}_#{index}, #{next}} = #{fun}(#{bind}, o, e#{body_call(fun, st)})"
               {[step | steps], ["ou#{slot}_#{index}" | outs], st, next}
 
             literal ->
@@ -987,7 +1111,7 @@ defmodule Gas.Compiler.Codegen do
 
       body_lines =
         if list == [] do
-          "{o#{slot}, c#{slot + 1}} = #{else_fun}(cu#{slot}, o, e)"
+          "{o#{slot}, c#{slot + 1}} = #{else_fun}(cu#{slot}, o, e#{body_call(else_fun, state)})"
         else
           Enum.join(Enum.reverse(steps), "\n        ") <>
             "\n        {o#{slot}, c#{slot + 1}} = {[#{Enum.join(Enum.reverse(outs), ", ")}], " <>
@@ -1052,6 +1176,28 @@ defmodule Gas.Compiler.Codegen do
       _other -> :error
     end
   end
+
+  # A local the node cannot rebind is still the caller's going in.
+  defp entering_locals(%AssignTag{}, locals), do: locals
+  defp entering_locals(%Gas.Text{}, locals), do: locals
+  defp entering_locals(%Object{}, locals), do: locals
+
+  # An if whose arms all assign one name is emitted as a value, which needs the local it rebinds.
+  defp entering_locals(%IfTag{} = node, locals) do
+    if lone_assign_pair(node), do: locals, else: rebound(node, locals)
+  end
+
+  defp entering_locals(node, locals), do: rebound(node, locals)
+
+  defp rebound(node, locals) do
+    case body_assigns(node) do
+      :all -> %{}
+      names -> Map.drop(locals, MapSet.to_list(names) ++ shadowed(node))
+    end
+  end
+
+  defp shadowed(%ForTag{variable: %Variable{identifier: key}}), do: [key | @runtime_bound]
+  defp shadowed(_node), do: []
 
   defp kept_locals(%AssignTag{}, locals), do: locals
   defp kept_locals(%Gas.Text{}, locals), do: locals
@@ -1637,7 +1783,7 @@ defmodule Gas.Compiler.Codegen do
 
   defp value(%Literal{interp_ast: %Gas.Template{parsed_template: sub}}, ctx, state) do
     {fun, state} = body(List.wrap(sub), state)
-    {:ok, "IO.iodata_to_binary(elem(#{fun}(#{ctx}, o, e), 0))", state}
+    {:ok, "IO.iodata_to_binary(elem(#{fun}(#{ctx}, o, e#{body_call(fun, state)}), 0))", state}
   end
 
   defp value(%Gas.Range{start: start, finish: finish}, ctx, state) do
@@ -2080,7 +2226,9 @@ defmodule Gas.Compiler.Codegen do
       aliases: %{},
       extracts: %{},
       raw_extracts: MapSet.new(),
-      locals: %{}
+      locals: %{},
+      pending: %{},
+      body_args: %{}
     }
 
   # `inspect/1` defaults truncate, which would emit a shortened template, not fail.
@@ -2096,10 +2244,12 @@ defmodule Gas.Compiler.Codegen do
     %{state | known: Map.put(state.known, name, value), touched: MapSet.put(state.touched, name)}
   end
 
-  defp loop_known(state, nodes) do
+  # `bound` is what the loop itself binds: inside the body those shadow whatever the name held
+  # coming in, and after it they hold that again.
+  defp loop_known(state, nodes, bound) do
     case body_assigns(List.wrap(nodes)) do
       :all -> %{state | known: %{}}
-      names -> %{state | known: Map.drop(state.known, MapSet.to_list(names))}
+      names -> %{state | known: Map.drop(state.known, bound ++ MapSet.to_list(names))}
     end
   end
 

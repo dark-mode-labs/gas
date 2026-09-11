@@ -1664,6 +1664,97 @@ defmodule Gas.Compiler.CodegenTest do
     end
   end
 
+  # An assign leaves its value in a variable and defers the context write; a path reads back
+  # through the context, so the write has to land before one that walks through the name.
+  # A setting holding liquid renders against the context reading it, so a deferred assign has to
+  # have landed before one of those resolves.
+  describe "a setting whose liquid names an assign above it" do
+    setup do
+      opts = [opaque_roots: ~w(block settings s), module_limit: 1_000_000]
+
+      vars =
+        Gas.Compiler.Interpolation.normalize_vars(
+          %{"block" => %{"settings" => %{"tpl" => "{{ greeting }}!"}}, "who" => "hi"},
+          opts
+        )
+
+      %{opts: opts, vars: vars}
+    end
+
+    defp resolves(source, %{opts: opts, vars: vars}) do
+      {:ok, template} = Gas.parse(source, opts)
+      {:ok, module} = Codegen.ensure_compiled(template.parsed_template, %{}, opts)
+      context = %Gas.Context{vars: vars}
+
+      {interpreted, _} = Gas.render(template.parsed_template, context, opts)
+      {compiled, _} = module.render(context, opts)
+
+      assert IO.iodata_to_binary(compiled) == IO.iodata_to_binary(interpreted)
+      IO.iodata_to_binary(compiled)
+    end
+
+    test "resolves against the assign, not the context it was deferred from", ctx do
+      assert resolves("{% assign greeting = who %}[{{ block.settings.tpl }}]", ctx) == "[hi!]"
+    end
+
+    test "resolves when the setting is assigned before it is output", ctx do
+      source = "{% assign greeting = who %}{% assign out = block.settings.tpl %}[{{ out }}]"
+      assert resolves(source, ctx) == "[hi!]"
+    end
+
+    test "resolves against the last write when the name is assigned twice", ctx do
+      source =
+        "{% assign greeting = who %}{% assign greeting = 'bye' %}[{{ block.settings.tpl }}]"
+
+      assert resolves(source, ctx) == "[bye!]"
+    end
+  end
+
+  # A loop variable shadows whatever the name held coming in, and the bindings the compiler
+  # settled before the loop are exactly what would keep the old value folded in the body.
+  describe "a loop variable that shadows a name already assigned" do
+    test "the body reads the item, not the value assigned before the loop" do
+      assert both("{% assign i = 'outer' %}{% for i in xs %}{{ i }}{% endfor %}[{{ i }}]", %{
+               "xs" => ~w(x y)
+             }) == "xy[outer]"
+    end
+
+    test "the name holds its earlier value again after the loop" do
+      assert both("{% assign i = 'outer' %}{% for i in xs %}{% endfor %}[{{ i }}]", %{
+               "xs" => ~w(x y)
+             }) == "[outer]"
+    end
+
+    test "a forloop assigned before the loop does not survive into it" do
+      assert both(
+               "{% assign forloop = 'no' %}{% for i in xs %}{{ forloop.index }}{% endfor %}",
+               %{
+                 "xs" => ~w(a b)
+               }
+             ) == "12"
+    end
+  end
+
+  describe "a path through a name just assigned" do
+    test "reads the value that assign gave it" do
+      assert both("{% assign a = src %}{% assign b = a.y %}[{{ b }}]", %{"src" => %{"y" => "hit"}}) ==
+               "[hit]"
+    end
+
+    test "reads it two levels down" do
+      assert both("{% assign a = src %}{% assign b = a.y.z %}[{{ b }}]", %{
+               "src" => %{"y" => %{"z" => "deep"}}
+             }) == "[deep]"
+    end
+
+    test "reads it through a key the bindings do not settle" do
+      assert both("{% assign a = src %}{% assign b = a[k] %}[{{ b }}]", %{
+               "src" => %{"y" => "hit"},
+               "k" => "y"
+             }) == "[hit]"
+    end
+  end
+
   describe "assigning the same name twice" do
     test "hands back a context carrying the last write" do
       source = "{% assign x = 'a' %}{% assign x = 'b' %}"
