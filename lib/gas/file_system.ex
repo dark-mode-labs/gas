@@ -66,11 +66,11 @@ defmodule Gas.LocalFileSystem do
 
       file_system = Gas.LocalFileSystem.new("/some/path")
 
-      Gas.LocalFileSystem.full_path(file_system, "mypartial")
-      # => "/some/path/_mypartial.liquid"
+      Gas.LocalFileSystem.read_template_file("mypartial", file_system)
+      # reads "/some/path/_mypartial.liquid"
 
-      Gas.LocalFileSystem.full_path(file_system,"dir/mypartial")
-      # => "/some/path/dir/_mypartial.liquid"
+      Gas.LocalFileSystem.read_template_file("dir/mypartial", file_system)
+      # reads "/some/path/dir/_mypartial.liquid"
 
   Optionally in the second argument you can specify a custom pattern for template filenames.
   `%s` will be replaced with template basename
@@ -80,16 +80,19 @@ defmodule Gas.LocalFileSystem do
 
       file_system = Gas.LocalFileSystem.new("/some/path", "%s.html")
 
-      Gas.LocalFileSystem.full_path( "index", file_system)
-      # => "/some/path/index.html"
+      Gas.LocalFileSystem.read_template_file("index", file_system)
+      # reads "/some/path/index.html"
 
+  Several roots may be given, and the first one holding the file answers for the
+  name. One name is one template however many directories the set spans, so a
+  template in one root may render a template in another.
   """
-  defstruct [:root, :pattern, :pre_processor]
+  defstruct [:roots, :pattern, :pre_processor]
   @behaviour Gas.FileSystem
 
-  def new(root, pattern \\ "_%s.liquid", pre_processor \\ Gas.PassThroughPreProcessor) do
+  def new(roots, pattern \\ "_%s.liquid", pre_processor \\ Gas.PassThroughPreProcessor) do
     %__MODULE__{
-      root: root,
+      roots: List.wrap(roots),
       pattern: pattern,
       pre_processor: pre_processor
     }
@@ -97,41 +100,49 @@ defmodule Gas.LocalFileSystem do
 
   @impl true
   def read_template_file(template_path, %__MODULE__{} = file_system) do
-    with {:ok, full_path} <- full_path(template_path, file_system),
-         {:exists, true} <- {:exists, File.exists?(full_path)},
-         content <- File.read!(full_path),
-         processed <- file_system.pre_processor.process(template_path, content) do
-      {:ok, processed}
-    else
-      {:exists, false} ->
-        {:error, %Gas.FileSystem.Error{reason: "No such template '#{template_path}'"}}
+    with {:ok, full_path} <- resolve(template_path, file_system) do
+      {:ok, file_system.pre_processor.process(template_path, File.read!(full_path))}
     end
   end
 
-  defp full_path(template_path, file_system) do
-    if String.match?(template_path, Regex.compile!("^[^./][a-zA-Z0-9_/-]+$")) do
-      template_name = String.replace(file_system.pattern, "%s", Path.basename(template_path))
-
-      full_path =
-        if String.contains?(template_path, "/") do
-          file_system.root
-          |> Path.join(Path.dirname(template_path))
-          |> Path.join(template_name)
-          |> Path.expand()
-        else
-          file_system.root
-          |> Path.join(template_name)
-          |> Path.expand()
+  defp resolve(template_path, file_system) do
+    if String.match?(template_path, ~r"^[^./][a-zA-Z0-9_/-]+$") do
+      Enum.find_value(file_system.roots, {:error, no_such_template(template_path)}, fn root ->
+        case full_path(template_path, root, file_system.pattern) do
+          :missing -> nil
+          found_or_error -> found_or_error
         end
-
-      if String.starts_with?(full_path, Path.expand(file_system.root)) do
-        {:ok, full_path}
-      else
-        {:error,
-         %Gas.FileSystem.Error{reason: "Illegal template path '#{Path.expand(full_path)}'"}}
-      end
+      end)
     else
       {:error, %Gas.FileSystem.Error{reason: "Illegal template name '#{template_path}'"}}
+    end
+  end
+
+  defp no_such_template(template_path),
+    do: %Gas.FileSystem.Error{reason: "No such template '#{template_path}'"}
+
+  defp full_path(template_path, root, pattern) do
+    template_name = String.replace(pattern, "%s", Path.basename(template_path))
+
+    full_path =
+      if String.contains?(template_path, "/") do
+        root
+        |> Path.join(Path.dirname(template_path))
+        |> Path.join(template_name)
+        |> Path.expand()
+      else
+        root |> Path.join(template_name) |> Path.expand()
+      end
+
+    cond do
+      not String.starts_with?(full_path, Path.expand(root)) ->
+        {:error, %Gas.FileSystem.Error{reason: "Illegal template path '#{full_path}'"}}
+
+      File.exists?(full_path) ->
+        {:ok, full_path}
+
+      true ->
+        :missing
     end
   end
 end

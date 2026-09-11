@@ -23,7 +23,12 @@ defmodule Gas.Compiler.Codegen do
 
   @module_limit 2_000
 
+  # Bound at render time, never by name in the tree, so no entry extraction can see them.
+  @runtime_bound ~w(forloop parentloop tablerowloop)
+
   # Filters safe at compile time: deterministic, depending only on their arguments.
+  @prefix "Elixir.Gas.Compiled."
+
   @pure_filters ~w(append prepend upcase downcase capitalize strip lstrip rstrip
                    join push push_if split first last size default replace
                    replace_first remove remove_first plus minus times divided_by
@@ -33,30 +38,40 @@ defmodule Gas.Compiler.Codegen do
                    strip_newlines newline_to_br keys values to_str to_integer)
 
   @doc """
-  Compiles `tree`, reusing the module from a previous call for the same tree.
+  The module for `tree`, compiling one unless it is already compiled.
 
-  Bucketed by hash and matched on the tree itself, so colliding trees each keep
-  their own module.
+  Nothing is cached: a tree with no name of its own is compiled into a module named after its
+  content, so asking twice for the same tree reaches the same module because the name is the same.
   """
-  @spec compile_cached(list, map, keyword) :: {:ok, module} | :error
-  def compile_cached(tree, known \\ %{}, opts \\ []) do
+  @spec ensure_compiled(list, map, keyword) :: {:ok, module} | :error
+  def ensure_compiled(tree, known \\ %{}, opts \\ []) do
     tree = List.wrap(tree)
 
-    case fetch_cached(tree, known) do
+    case compiled(tree, known, opts) do
       {:ok, module} -> {:ok, module}
       :error -> compile_new(tree, known, opts)
     end
   end
 
-  @doc "The module already compiled for `tree`, or `:error`. Never compiles one."
-  @spec fetch_cached(list, map) :: {:ok, module} | :error
-  def fetch_cached(tree, known \\ %{}) do
+  # The module already compiled for `tree`, or `:error`; never compiles one. A `:name` in `opts`
+  # answers by name: two files holding the same liquid are still two files.
+  defp compiled(tree, known, opts) do
     tree = List.wrap(tree)
 
-    case List.keyfind(bucket(tree, known), {tree, known}, 0) do
-      {_, module} -> {:ok, module}
-      nil -> :error
+    case named_module(known, opts) do
+      {:ok, module} -> loaded(module)
+      :error -> loaded(content_name(tree, known, opts))
     end
+  end
+
+  # `module_loaded/1`, not the code server: these modules exist only because something compiled
+  # them here, so there is no file to go looking for.
+  defp loaded(module) when is_atom(module) do
+    if :erlang.module_loaded(module), do: {:ok, module}, else: :error
+  end
+
+  defp loaded(name) when is_binary(name) do
+    with {:ok, module} <- module_for(name), do: loaded(module)
   end
 
   @doc """
@@ -65,17 +80,24 @@ defmodule Gas.Compiler.Codegen do
   With `:on_codegen_miss` set, an uncompiled tree goes to the host and this answers `:deferred`:
   the caller renders interpreted now and reads the module on a later pass. The callback runs on
   the render path, so it must hand the work off rather than do it.
+
+  A 2-arity callback is handed the options too, which carry the `:name` the module is called
+  after; a 1-arity one gets only the tree, and what it compiles is named after its content.
   """
   @spec fetch_or_defer(list, map, keyword) :: {:ok, module} | :deferred | :error
   def fetch_or_defer(tree, known \\ %{}, opts \\ []) do
     tree = List.wrap(tree)
 
-    case fetch_cached(tree, known) do
+    case compiled(tree, known, opts) do
       {:ok, module} ->
         {:ok, module}
 
       :error ->
         case Keyword.get(opts, :on_codegen_miss) do
+          fun when is_function(fun, 2) ->
+            fun.(tree, opts)
+            :deferred
+
           fun when is_function(fun, 1) ->
             fun.(tree)
             :deferred
@@ -86,43 +108,102 @@ defmodule Gas.Compiler.Codegen do
     end
   end
 
-  defp bucket(tree, known), do: :persistent_term.get(bucket_key(tree, known), [])
+  # A named template needs no ceiling: its module is its file, and a theme holds finitely many.
+  defp compile_new(tree, known, opts) do
+    case named_module(known, opts) do
+      {:ok, module} -> compile(tree, module, known, opts)
+      :error -> compile_hashed(tree, known, opts)
+    end
+  end
 
-  defp bucket_key(tree, known), do: bucket_key(:erlang.phash2({tree, known}))
+  @doc """
+  Drops the module compiled for the template named `name`, so the next compile builds it again.
 
-  defp bucket_key(hash), do: {__MODULE__, :tree, hash}
+  A module answers for its name, not for the liquid it was built from, so a rewritten file keeps
+  the module it had until this is called. Hosts that reload templates in a running system call it
+  when the file changes; a host that only ever starts fresh never needs to.
+  """
+  @spec forget(binary) :: :ok
+  def forget(name) when is_binary(name) do
+    with {:ok, module} <- module_for(name), true <- :erlang.module_loaded(module) do
+      # Deleting makes the loaded version old and purging then drops it. Purging first would
+      # only clear a version older than the one still holding the name.
+      :code.delete(module)
+      :code.purge(module)
+    end
+
+    :ok
+  end
+
+  # Only a whole template gets its path for a name: a tree compiled against bindings is one
+  # caller's reading of the file, not the file.
+  defp named_module(known, opts) when map_size(known) == 0 do
+    case Keyword.get(opts, :name) do
+      name when is_binary(name) and name != "" -> {:ok, module_name(name)}
+      _other -> :error
+    end
+  end
+
+  defp named_module(_known, _opts), do: :error
+
+  # The module is the path with its separators flattened, and nothing else: a render by name asks
+  # for this on every render, so splitting the path and camelising each segment would be that work
+  # done per render. `defmodule` will not take an `Elixir.`-prefixed atom that is not alias-shaped,
+  # which is the only reason the path is touched at all.
+  defp module_name(name), do: :erlang.binary_to_atom(@prefix <> flatten(name))
+
+  defp flatten(name), do: String.replace(name, ["/", "-", ".", " "], "_")
+
+  @doc """
+  The module the template named `name` compiled into, or `:error` if nothing ever compiled it.
+
+  A pure function of the name — no lookup table stands between a caller and its callee — and it
+  coins no atom, so asking for a name nothing compiled cannot grow the atom table.
+  """
+  @spec module_for(binary) :: {:ok, module} | :error
+  def module_for(name) when is_binary(name) do
+    {:ok, :erlang.binary_to_existing_atom(@prefix <> flatten(name))}
+  rescue
+    ArgumentError -> :error
+  end
 
   # A loaded module is never purged, and liquid-bearing settings are merchant-editable.
-  defp compile_new(tree, known, opts) do
-    hash = :erlang.phash2({tree, known})
-    key = bucket_key(hash)
-    bucket = :persistent_term.get(key, [])
-
+  defp compile_hashed(tree, known, opts) do
     if compiled_count() < module_limit(opts) do
-      name = "T#{hash}_#{System.unique_integer([:positive])}"
-
-      case compile(tree, Module.concat(Gas.Compiled, name), known, opts) do
-        {:ok, module} ->
-          :persistent_term.put(key, [{{tree, known}, module} | bucket])
-          :persistent_term.put({__MODULE__, :count}, compiled_count() + 1)
-          {:ok, module}
-
-        :error ->
-          :error
-      end
+      compile(tree, module_name(content_name(tree, known, opts)), known, opts)
     else
       Gas.Compiler.Runtime.log_once({__MODULE__, :limit_reported}, fn ->
-        "gas: #{module_limit(opts)} compiled templates reached; the rest render interpreted"
+        "gas: the module limit of #{module_limit(opts)} for liquid with no name of its own is " <>
+          "spent; such liquid now renders interpreted"
       end)
 
       :error
     end
   end
 
-  defp compiled_count, do: :persistent_term.get({__MODULE__, :count}, 0)
+  @content_prefix "c_"
 
-  # Tunable by the host: a node serving many merchants mints one module per
-  # distinct liquid-bearing setting, and they are never purged.
+  # Options the emitted code turns on, so one tree under two of them is two modules. Not `:trees`:
+  # what it holds is what the file system would have given.
+  @shaping_opts [:file_system, :tags, :opaque_roots, :name_modules]
+
+  # SHA-256: liquid comes from merchant settings, and a collision renders one merchant's as another's.
+  defp content_name(tree, known, opts) do
+    shape = Enum.map(@shaping_opts, &Keyword.get(opts, &1))
+    digest = :crypto.hash(:sha256, :erlang.term_to_binary({tree, known, shape}))
+
+    @content_prefix <> Base.encode16(digest, case: :lower)
+  end
+
+  # Counted off the modules themselves, so nothing holds a tally. Read per compile, never per look.
+  defp compiled_count do
+    prefix = @prefix <> @content_prefix
+
+    Enum.count(:erlang.loaded(), &String.starts_with?(Atom.to_string(&1), prefix))
+  end
+
+  # How many modules liquid with no name of its own may mint. A template compiled under its own
+  # path is not counted and cannot be crowded out by the liquid a merchant types into a setting.
   defp module_limit(opts) do
     Keyword.get_lazy(opts, :module_limit, fn ->
       Application.get_env(:gas, :max_compiled_modules, @module_limit)
@@ -132,16 +213,30 @@ defmodule Gas.Compiler.Codegen do
   @doc "Builds and loads a module for `tree`. Returns `{:ok, module}` or `:error`."
   @spec compile(list, module, map, keyword) :: {:ok, module} | :error
   def compile(tree, mod, known \\ %{}, opts \\ []) do
-    tree = List.wrap(tree)
-    {source, nodes, _covered, _total, constant} = build(tree, mod, known, opts)
-    [{module, _bin}] = Code.compile_string(source)
-    :persistent_term.put({__MODULE__, module}, {tree, nodes})
-    if constant, do: :persistent_term.put({__MODULE__, :const, module}, constant_value(constant))
-    {:ok, module}
+    {:ok, load(List.wrap(tree), mod, known, opts)}
   rescue
-    _ -> :error
+    error -> refused(mod, Exception.format(:error, error, __STACKTRACE__))
   catch
-    _, _ -> :error
+    kind, value -> refused(mod, Exception.format(kind, value, __STACKTRACE__))
+  end
+
+  @doc false
+  def load(tree, mod, known, opts) do
+    {source, _nodes, _covered, _total, _constant} = build(tree, mod, known, opts)
+    [{module, _bin}] = Code.compile_string(source)
+    # `Code.compile_string/1` hands the module back while it still counts as being defined, and a
+    # name compiled again inside that window is refused. This waits for it to be a module.
+    Code.ensure_compiled!(module)
+    module
+  end
+
+  # Silence here once cost three templates their compiled form for a whole release.
+  defp refused(mod, formatted) do
+    Gas.Compiler.Runtime.log_once({__MODULE__, :refused, mod}, fn ->
+      "gas: #{inspect(mod)} would not compile, so it renders interpreted:\n#{formatted}"
+    end)
+
+    :error
   end
 
   @doc """
@@ -159,7 +254,10 @@ defmodule Gas.Compiler.Codegen do
   end
 
   # The output a compiled module always produces, or nil if it varies.
-  defp constant_output(module), do: :persistent_term.get({__MODULE__, :const, module}, nil)
+  # The module says so itself; nothing keeps a register of what each one renders.
+  defp constant_output(module) do
+    if function_exported?(module, :__gas_constant__, 0), do: module.__gas_constant__()
+  end
 
   @doc """
   An argument's value if `known` fixes it at compile time, else `:unknown`.
@@ -171,46 +269,63 @@ defmodule Gas.Compiler.Codegen do
   def constant_argument(argument, known), do: const_value(argument, known)
 
   defp build(tree, mod, known, opts) do
-    state = new_state(known, opts)
+    tree = List.wrap(tree)
+    bound = bindings(tree, %{})
+    aliases = aliases(tree, bound)
+    groups = extract_groups(tree, aliases, bound)
 
-    {entry, state} = body(List.wrap(tree), state)
+    state = %{
+      new_state(known, opts)
+      | aliases: aliases,
+        extracts: extract_table(groups),
+        raw_extracts: raw_extracts(groups)
+    }
+
+    {entry, state} = body(tree, state)
+    extraction = extract_source(groups)
+    nodes = List.to_tuple(Enum.reverse(state.data))
+    constant = state.const_bodies[entry]
 
     src = """
     defmodule #{inspect(mod)} do
       @moduledoc false
       import Gas.Compiler.Runtime, warn: false
-      @data_key {Gas.Compiler.Codegen, __MODULE__}
+      # Every node this module runs rather than compiles travels inside it: a loaded module that
+      # needs a lookup elsewhere before it can render is not really loaded.
+      @nodes #{literal(nodes)}
 
-      # Generated code assumes the default matcher, scopes and lax variables.
+      # What this module always renders, or nil where that varies. A caller inlining it asks the
+      # module, which is where the answer belongs — it is a fact about this code.
+      def __gas_constant__, do: #{constant || "nil"}
+
+      # Generated code assumes the default matcher, scopes and lax variables. A context holding
+      # anything else is one this module was not built for, and saying so is the whole answer:
+      # rendering it some other way here would be a slower module pretending to be this one.
       def render(%Gas.Context{matcher_module: Gas.Matcher, strict_variables: false} = ctx, opts) do
         if ctx.scopes == Gas.Context.default_scopes() do
-          try do
-            #{entry}(ctx, opts)
-          rescue
-            error ->
-              report_fallback(__MODULE__, error, __STACKTRACE__)
-              interpret_all(ctx, opts)
-          end
+          #{extraction}
+          #{entry}(ctx, opts, e)
         else
-          interpret_all(ctx, opts)
+          raise Gas.Compiler.Runtime.uncompiled_context(__MODULE__, ctx)
         end
       end
 
-      def render(%Gas.Context{} = ctx, opts), do: interpret_all(ctx, opts)
-
-    #{state.funs |> Enum.reverse() |> live_funs(entry) |> Enum.join("\n")}
-      def interpret_all(ctx, opts) do
-        {tree, _nodes} = :persistent_term.get(@data_key)
-        Gas.render(tree, ctx, opts)
+      def render(%Gas.Context{} = ctx, opts) do
+        _ = opts
+        raise Gas.Compiler.Runtime.uncompiled_context(__MODULE__, ctx)
       end
 
+    #{state.funs |> Enum.reverse() |> live_funs(entry) |> Enum.join("\n")}
       def interpret(index, ctx, opts) do
-        {_tree, nodes} = :persistent_term.get(@data_key)
-        Gas.render([elem(nodes, index)], ctx, opts)
+        Gas.render([elem(@nodes, index)], ctx, opts)
+      end
+
+      def dispatch(index, ctx, opts) do
+        Gas.Renderable.render(elem(@nodes, index), ctx, opts)
       end
 
       # Mirrors Gas.Context.scan_scopes: a found-nil keeps looking, not wins.
-      def get(c, keys, o), do: resolve(lookup(c, keys), c, o)
+      def get(c, keys, o), do: res(lookup(c, keys), c, o)
 
       def lookup(%{iteration_vars: iteration} = c, keys) when map_size(iteration) == 0 do
         case walk(c.vars, keys) do
@@ -260,6 +375,11 @@ defmodule Gas.Compiler.Codegen do
 
       def put_var(c, name, value), do: %{c | vars: Map.put(c.vars, name, value)}
 
+      # Only a setting holding liquid needs the context to finish it; everything else is itself.
+      def res(value, _c, _o) when is_binary(value), do: value
+      def res(%Gas.InterpolatedString{} = value, c, o), do: resolve(value, c, o)
+      def res(value, _c, _o), do: value
+
       def str(value) when is_binary(value), do: value
       def str(value), do: Gas.Argument.stringify!(value)
 
@@ -279,8 +399,7 @@ defmodule Gas.Compiler.Codegen do
     end
     """
 
-    {src, List.to_tuple(Enum.reverse(state.data)), state.nodes - state.fallbacks, state.nodes,
-     state.const_bodies[entry]}
+    {src, nodes, state.nodes - state.fallbacks, state.nodes, constant}
   end
 
   # A branch folded to a constant orphans its function, so unreachable defs go.
@@ -311,12 +430,82 @@ defmodule Gas.Compiler.Codegen do
   # ---- a node list becomes a function returning {iodata, context} ---------
   defp body(nodes, state) do
     name = "b#{state.n}"
-    state = %{state | n: state.n + 1}
+    outer_hoists = state.hoists
+    outer_locals = state.locals
+    state = %{state | n: state.n + 1, hoists: [], locals: %{}}
 
-    {steps, state, slot} =
-      Enum.reduce(nodes, {[], state, 0}, fn node, {steps, st, slot} ->
-        st = %{st | nodes: st.nodes + 1}
-        {line, out, st, next} = emit(node, st, slot)
+    {steps, state, slot} = emit_nodes(nodes, [], state, 0)
+
+    prologue =
+      Enum.map(state.hoists, fn {prefix, binding} ->
+        "#{binding} = lookup(c0, #{literal(prefix)})"
+      end)
+
+    lines = prologue ++ (steps |> Enum.map(& &1.line) |> Enum.reject(&(&1 == "")))
+    outs = Enum.map(steps, &{&1.out, &1.const?})
+    merged = merge_constants(outs)
+
+    expression = "[#{Enum.join(merged, ", ")}]"
+
+    state =
+      cond do
+        lines == [] and Enum.all?(outs, &elem(&1, 1)) ->
+          constant = if merged == [], do: ~s(""), else: Enum.join(merged, " <> ")
+          %{state | const_bodies: Map.put(state.const_bodies, name, constant)}
+
+        lines == [] and slot == 0 and not Regex.match?(~r/\bc\d+\b/, expression) ->
+          %{state | pure_bodies: Map.put(state.pure_bodies, name, expression)}
+
+        true ->
+          state
+      end
+
+    fun =
+      if Enum.any?(steps, & &1.throws?) do
+        incremental_body(name, steps, "c#{slot}", prologue)
+      else
+        """
+          defp #{name}(c0, o, e) do
+            _ = o
+            _ = e
+            #{Enum.join(lines, "\n        ")}
+            {[#{Enum.join(merged, ", ")}], c#{slot}}
+          end
+        """
+      end
+
+    {name, %{state | funs: [fun | state.funs], hoists: outer_hoists, locals: outer_locals}}
+  end
+
+  defp emit_capture(inner, name, state, slot) do
+    {fun, state} = body(List.wrap(inner), state)
+    state = forget(state, name)
+    local = "v#{slot}"
+
+    line =
+      "{cap#{slot}, cc#{slot}} = #{fun}(c#{slot}, o, e); #{local} = IO.iodata_to_binary(cap#{slot}); " <>
+        "c#{slot + 1} = put_var(cc#{slot}, #{literal(name)}, #{local})"
+
+    kept =
+      case body_assigns(List.wrap(inner)) do
+        :all -> %{}
+        names -> Map.drop(state.locals, MapSet.to_list(names))
+      end
+
+    {line, "[]", %{state | locals: Map.put(kept, name, local)}, slot + 1}
+  end
+
+  defp emit_nodes([], steps, state, slot), do: {Enum.reverse(steps), state, slot}
+
+  defp emit_nodes([node | rest], steps, state, slot) do
+    case settled_branch(node, state) do
+      {:ok, branch} ->
+        emit_nodes(branch ++ rest, steps, state, slot)
+
+      :error ->
+        state = %{state | nodes: state.nodes + 1, locals: kept_locals(node, state.locals)}
+        {line, out, state, next} = emit(node, state, slot)
+        state = %{state | locals: kept_locals(node, state.locals)}
 
         step = %{
           line: line,
@@ -326,40 +515,33 @@ defmodule Gas.Compiler.Codegen do
           ctx: "c#{next}"
         }
 
-        {[step | steps], st, next}
-      end)
-
-    steps = Enum.reverse(steps)
-    lines = steps |> Enum.map(& &1.line) |> Enum.reject(&(&1 == ""))
-    outs = Enum.map(steps, &{&1.out, &1.const?})
-    merged = merge_constants(outs)
-
-    state =
-      if lines == [] and Enum.all?(outs, &elem(&1, 1)) do
-        constant = if merged == [], do: ~s(""), else: Enum.join(merged, " <> ")
-        %{state | const_bodies: Map.put(state.const_bodies, name, constant)}
-      else
-        state
-      end
-
-    fun =
-      if Enum.any?(steps, & &1.throws?) do
-        incremental_body(name, steps, "c#{slot}")
-      else
-        """
-          defp #{name}(c0, o) do
-            _ = o
-            #{Enum.join(lines, "\n        ")}
-            {[#{Enum.join(merged, ", ")}], c#{slot}}
-          end
-        """
-      end
-
-    {name, %{state | funs: [fun | state.funs]}}
+        emit_nodes(rest, [step | steps], state, next)
+    end
   end
 
+  # A condition the bindings settle contributes its branch to this body rather than a function of
+  # its own, so what the branch assigns keeps folding into the nodes that follow it.
+  defp settled_branch(%IfTag{tag_name: kind} = node, state) when kind in [:if, :unless] do
+    first = if kind == :if, do: node.condition, else: {:negate, node.condition}
+    chain = [{first, node.body} | List.wrap(node.elsifs)] ++ [{:else, node.else_body}]
+
+    case fold_chain(chain, state.known) do
+      {:taken, branch} -> {:ok, List.wrap(branch)}
+      :unknown -> :error
+    end
+  end
+
+  defp settled_branch(%CaseTag{} = node, state) do
+    case fold_case(node, state.known) do
+      {:taken, branch} -> {:ok, List.wrap(branch)}
+      :unknown -> :error
+    end
+  end
+
+  defp settled_branch(_node, _state), do: :error
+
   # `break`/`continue` carry prior output, so a throwing body hands its accumulator on.
-  defp incremental_body(name, steps, exit_ctx) do
+  defp incremental_body(name, steps, exit_ctx, prologue) do
     {body, _acc} =
       steps
       |> Enum.with_index(1)
@@ -377,8 +559,10 @@ defmodule Gas.Compiler.Codegen do
       end)
 
     """
-      defp #{name}(c0, o) do
+      defp #{name}(c0, o, e) do
         _ = o
+        _ = e
+        #{Enum.join(prologue, "\n        ")}
         acc0 = []
         #{body |> Enum.reject(&(&1 == "")) |> Enum.join("\n        ")}
         {acc#{length(steps)}, #{exit_ctx}}
@@ -406,31 +590,59 @@ defmodule Gas.Compiler.Codegen do
   defp constant_out?(_line, _out), do: false
 
   # Neighbouring constants join with `<>`, which the compiler folds into one literal.
+  # A node that rendered nothing contributes nothing: keeping its `[]` only lengthens the
+  # iolist the caller walks, and an empty literal folds into the constant beside it.
   defp merge_constants(outs) do
     outs
     |> Enum.chunk_by(&elem(&1, 1))
     |> Enum.flat_map(&merge_chunk/1)
+    |> Enum.reject(&(&1 in ["[]", ~s("")]))
   end
 
   defp merge_chunk([{_out, false} | _] = chunk), do: Enum.map(chunk, &elem(&1, 0))
-  defp merge_chunk(chunk), do: [Enum.map_join(chunk, " <> ", &literal_source/1)]
 
-  defp literal_source({"[]", _}), do: "\"\""
+  defp merge_chunk(chunk) do
+    case Enum.reject(chunk, &(elem(&1, 0) == "[]")) do
+      [] -> []
+      kept -> [Enum.map_join(kept, " <> ", &literal_source/1)]
+    end
+  end
+
   defp literal_source({out, _}), do: out
 
   defp fallback(state, slot, node) do
-    index = state.fallbacks
-    # An interpreted node may assign anything, so bindings survive only if it says not.
-    known = if assigns_nothing?(node), do: state.known, else: %{}
-    state = %{state | data: [node | state.data], fallbacks: index + 1, known: known}
+    {index, state} = stored(state, node)
+    state = %{state | fallbacks: state.fallbacks + 1}
 
     {"{o#{slot}, c#{slot + 1}} = interpret(#{index}, c#{slot}, o)", "o#{slot}", state, slot + 1}
+  end
+
+  # A tag reading what only the request supplies still renders one fixed way, so the call is
+  # emitted and the value left to run time. That is a compiled node, not an interpreted one.
+  defp emit_at_runtime(state, slot, node) do
+    {index, state} = stored(state, node)
+
+    {"{o#{slot}, c#{slot + 1}} = dispatch(#{index}, c#{slot}, o)", "o#{slot}", state, slot + 1}
+  end
+
+  # An interpreted node may assign anything, so bindings survive only if it says not.
+  defp stored(state, node) do
+    known = if assigns_nothing?(node), do: state.known, else: %{}
+
+    {length(state.data), %{state | data: [node | state.data], known: known}}
   end
 
   # ---- emit --------------------------------------------------------------
   defp emit(%Text{text: text}, state, slot), do: {"", literal(text), state, slot}
 
   defp emit(%Gas.Tags.NoOpTag{}, state, slot), do: {"", "[]", state, slot}
+
+  # The loop catches what the interpreter throws, so leaving the loop is the same throw either way.
+  defp emit(%Gas.Tags.BreakTag{}, state, slot),
+    do: {"throw({:break_exp, [], c#{slot}})", "[]", state, slot}
+
+  defp emit(%Gas.Tags.ContinueTag{}, state, slot),
+    do: {"throw({:continue_exp, [], c#{slot}})", "[]", state, slot}
 
   defp emit(%Object{argument: argument, filters: filters} = node, state, slot) do
     case const_expression(argument, filters, state.known) do
@@ -444,7 +656,11 @@ defmodule Gas.Compiler.Codegen do
       {:ok, code, state} ->
         name = to_string(target)
         state = rebind(state, name, const_assign(obj, state.known))
-        {"c#{slot + 1} = put_var(c#{slot}, #{literal(name)}, #{code})", "[]", state, slot + 1}
+        local = "v#{slot}"
+        state = %{state | locals: Map.put(state.locals, name, local)}
+
+        {"#{local} = #{code}\n        c#{slot + 1} = put_var(c#{slot}, #{literal(name)}, #{local})",
+         "[]", state, slot + 1}
 
       :error ->
         fallback(state, slot, node)
@@ -452,15 +668,17 @@ defmodule Gas.Compiler.Codegen do
   end
 
   defp emit(%CaptureTag{argument: target, body: inner}, state, slot) do
-    {fun, state} = body(List.wrap(inner), state)
     name = to_string(target)
-    state = forget(state, name)
 
-    line =
-      "{cap#{slot}, cc#{slot}} = #{fun}(c#{slot}, o); " <>
-        "c#{slot + 1} = put_var(cc#{slot}, #{literal(name)}, IO.iodata_to_binary(cap#{slot}))"
+    case const_nodes(List.wrap(inner), state.known) do
+      # Themes build class fragments by capturing them; a captured body the bindings settle is a
+      # string, and leaving it unfolded stops the accumulation that follows from folding at all.
+      {:ok, captured} ->
+        {"", "[]", rebind(state, name, {:ok, captured}), slot}
 
-    {line, "[]", state, slot + 1}
+      :unknown ->
+        emit_capture(inner, name, state, slot)
+    end
   end
 
   defp emit(%IfTag{tag_name: kind} = node, state, slot) when kind in [:if, :unless] do
@@ -509,17 +727,36 @@ defmodule Gas.Compiler.Codegen do
       {"", "[]", state, slot}
     else
       case rewrite(node, state.known) do
-        {:ok, replacement} -> emit_rewritten(replacement, state, slot)
-        :error -> fallback(state, slot, node)
+        {:ok, replacement} ->
+          emit_rewritten(replacement, state, slot)
+
+        :error ->
+          if renders_at_runtime?(node),
+            do: emit_at_runtime(state, slot, node),
+            else: fallback(state, slot, node)
       end
     end
   end
 
-  # A body whose whole output is fixed is inlined at the call site instead.
+  # A body whose whole output is fixed, or which touches no context, is inlined at the call site.
   defp emit_body(fun, state, slot) do
-    case state.const_bodies[fun] do
-      nil -> {"{o#{slot}, c#{slot + 1}} = #{fun}(c#{slot}, o)", "o#{slot}", state, slot + 1}
-      literal -> {"", literal, state, slot}
+    cond do
+      literal = state.const_bodies[fun] ->
+        {"", literal, state, slot}
+
+      expression = state.pure_bodies[fun] ->
+        {"", expression, state, slot}
+
+      true ->
+        {"{o#{slot}, c#{slot + 1}} = #{fun}(c#{slot}, o, e)", "o#{slot}", state, slot + 1}
+    end
+  end
+
+  # A call to a body, or the body itself where it needs no context to run.
+  defp branch(fun, ctx, state) do
+    case state.pure_bodies[fun] do
+      nil -> "#{fun}(#{ctx}, o, e)"
+      expression -> "{#{expression}, #{ctx}}"
     end
   end
 
@@ -529,7 +766,7 @@ defmodule Gas.Compiler.Codegen do
 
     case state.const_bodies[fun] do
       nil ->
-        line = "{o#{slot}, _} = #{fun}(c#{slot}, o)\n        c#{slot + 1} = c#{slot}"
+        line = "{o#{slot}, _} = #{fun}(c#{slot}, o, e)\n        c#{slot + 1} = c#{slot}"
         {line, "o#{slot}", state, slot + 1}
 
       literal ->
@@ -560,9 +797,10 @@ defmodule Gas.Compiler.Codegen do
       {tail, state} =
         clauses
         |> Enum.reverse()
-        |> Enum.reduce({"#{else_fun}(c#{slot}, o)", state}, fn {test, branch}, {acc, st} ->
+        |> Enum.reduce({branch(else_fun, "c#{slot}", state), state}, fn {test, branch},
+                                                                        {acc, st} ->
           {fun, st} = conditional_body(List.wrap(branch), st)
-          {"if #{test} do #{fun}(c#{slot}, o) else #{acc} end", st}
+          {"if #{test} do #{fun}(c#{slot}, o, e) else #{acc} end", st}
         end)
 
       line = "#{subject} = #{code}\n        {o#{slot}, c#{slot + 1}} = #{tail}"
@@ -579,6 +817,15 @@ defmodule Gas.Compiler.Codegen do
   end
 
   defp renders_nothing?(_node), do: false
+
+  # `gas_renders_at_runtime?/0` lets a tag be called rather than interpreted when nothing the
+  # compiler knows could have rewritten it.
+  defp renders_at_runtime?(%module{}) do
+    Code.ensure_loaded?(module) and function_exported?(module, :gas_renders_at_runtime?, 0) and
+      module.gas_renders_at_runtime?()
+  end
+
+  defp renders_at_runtime?(_node), do: false
 
   # `gas_assigns_nothing?/0` keeps bindings alive across a node left interpreted.
   defp assigns_nothing?(%module{}) do
@@ -619,7 +866,7 @@ defmodule Gas.Compiler.Codegen do
         if controls? do
           """
           try do
-                            {out, cc} = #{body_fun}(cc, o)
+                            {out, cc} = #{body_fun}(cc, o, e)
                             {cc, [acc, out]}
                           catch
                             {:break_exp, r, c} -> throw({:gas_cg_break, [acc, r], c})
@@ -628,7 +875,7 @@ defmodule Gas.Compiler.Codegen do
           """
         else
           """
-          {out, cc} = #{body_fun}(cc, o)
+          {out, cc} = #{body_fun}(cc, o, e)
                           {cc, [acc, out]}\
           """
         end
@@ -668,7 +915,7 @@ defmodule Gas.Compiler.Codegen do
       {o#{slot}, c#{slot + 1}} =
                 case for_prepare(enumerate(#{enum_code}), #{offset_code}, #{limit_code}, #{node.reversed == true}, c#{slot}, #{literal(for_name)}) do
                   {:ok, [], ctx#{slot}} ->
-                    #{else_fun}(ctx#{slot}, o)
+                    #{else_fun}(ctx#{slot}, o, e)
 
                   {:ok, list#{slot}, ctx#{slot}} ->
                     len#{slot} = length(list#{slot})
@@ -718,7 +965,7 @@ defmodule Gas.Compiler.Codegen do
 
           case st.const_bodies[fun] do
             nil ->
-              step = "{ou#{slot}_#{index}, #{next}} = #{fun}(#{bind}, o)"
+              step = "{ou#{slot}_#{index}, #{next}} = #{fun}(#{bind}, o, e)"
               {[step | steps], ["ou#{slot}_#{index}" | outs], st, next}
 
             literal ->
@@ -726,12 +973,12 @@ defmodule Gas.Compiler.Codegen do
           end
         end)
 
-      state = %{state | known: outer}
+      state = %{state | known: leave_loop(state.known, outer, key)}
       {else_fun, state} = conditional_body(List.wrap(node.else_body), state)
 
       body_lines =
         if list == [] do
-          "{o#{slot}, c#{slot + 1}} = #{else_fun}(cu#{slot}, o)"
+          "{o#{slot}, c#{slot + 1}} = #{else_fun}(cu#{slot}, o, e)"
         else
           Enum.join(Enum.reverse(steps), "\n        ") <>
             "\n        {o#{slot}, c#{slot + 1}} = {[#{Enum.join(Enum.reverse(outs), ", ")}], " <>
@@ -753,6 +1000,17 @@ defmodule Gas.Compiler.Codegen do
     else
       _ -> :error
     end
+  end
+
+  # Only the loop's own names go out of scope with it: what the body assigned outlives the loop,
+  # which is how a list built one element at a time survives to be read after it.
+  defp leave_loop(inner, outer, key) do
+    Enum.reduce([key, "forloop"], Map.drop(inner, [key, "forloop"]), fn name, acc ->
+      case Map.fetch(outer, name) do
+        {:ok, value} -> Map.put(acc, name, value)
+        :error -> acc
+      end
+    end)
   end
 
   defp bind_iteration(known, "forloop", element, _index, _length, _name),
@@ -786,24 +1044,112 @@ defmodule Gas.Compiler.Codegen do
     end
   end
 
+  defp kept_locals(%AssignTag{}, locals), do: locals
+  defp kept_locals(%Gas.Text{}, locals), do: locals
+  defp kept_locals(%Object{}, locals), do: locals
+  defp kept_locals(%CaptureTag{}, locals), do: locals
+  defp kept_locals(%IfTag{} = node, locals), do: if(lone_assign_pair(node), do: locals, else: %{})
+  defp kept_locals(_node, _locals), do: %{}
+
+  defp lone_assign_pair(node) do
+    with [] <- List.wrap(node.elsifs),
+         {:ok, then_name, _} <- lone_assign(List.wrap(node.body)),
+         {:ok, else_name, _} <- lone_assign(List.wrap(node.else_body)),
+         {:ok, _name} <- same_target(then_name, else_name) do
+      true
+    else
+      _ -> false
+    end
+  end
+
   defp emit_if(node, kind, state, slot) do
-    with {:ok, test} <- condition(node.condition, "c#{slot}", state.known),
-         {:ok, chain} <- elsif_chain(node.elsifs, "c#{slot}", state.known) do
+    case settled_assign(node, kind, state, slot) do
+      {:ok, line, out, state, next} -> {line, out, state, next}
+      :error -> emit_branches(node, kind, state, slot)
+    end
+  end
+
+  # A branch that only assigns needs no function of its own: the two values are the arms of one
+  # expression, which keeps the assign a value rather than a context another body hands back.
+  defp settled_assign(node, kind, state, slot) do
+    with [] <- List.wrap(node.elsifs),
+         {:ok, then_name, then_value} <- lone_assign(List.wrap(node.body)),
+         {:ok, else_name, else_value} <- lone_assign(List.wrap(node.else_body)),
+         {:ok, name} <- same_target(then_name, else_name),
+         {:ok, test} <- condition(node.condition, "c#{slot}", state),
+         {:ok, line, state} <-
+           assign_if(test, kind, name, then_value, else_value, state, slot) do
+      {:ok, line, "[]", forget(state, name), slot + 1}
+    else
+      _ -> :error
+    end
+  end
+
+  defp same_target(:any, :any), do: :error
+  defp same_target(:any, name), do: {:ok, name}
+  defp same_target(name, :any), do: {:ok, name}
+  defp same_target(name, name), do: {:ok, name}
+  defp same_target(_a, _b), do: :error
+
+  # `nil` stands for the branch that leaves the variable as it was.
+  defp lone_assign([]), do: {:ok, :any, nil}
+
+  defp lone_assign([%AssignTag{argument: target, object: %Object{} = obj}]),
+    do: {:ok, to_string(target), obj}
+
+  defp lone_assign(_nodes), do: :error
+
+  # With the value already in hand the arms are values, and the branch that assigns nothing
+  # hands back the one it had. Without it they are contexts, so the idle branch stays idle
+  # rather than reading a variable out to write the same value straight back in.
+  defp assign_if(test, kind, name, then_value, else_value, state, slot) do
+    ctx = "c#{slot}"
+    test = if kind == :if, do: test, else: "!(#{test})"
+    held = state.locals[name]
+
+    with {:ok, then_arm, state} <- assign_arm(then_value, name, held, ctx, state),
+         {:ok, else_arm, state} <- assign_arm(else_value, name, held, ctx, state) do
+      if held do
+        local = "v#{slot}"
+
+        {:ok,
+         "#{local} = if #{test} do #{then_arm} else #{else_arm} end\n        " <>
+           "c#{slot + 1} = put_var(#{ctx}, #{literal(name)}, #{local})",
+         %{state | locals: Map.put(state.locals, name, local)}}
+      else
+        {:ok, "c#{slot + 1} = if #{test} do #{then_arm} else #{else_arm} end",
+         %{state | locals: Map.delete(state.locals, name)}}
+      end
+    end
+  end
+
+  defp assign_arm(nil, _name, held, ctx, state), do: {:ok, held || ctx, state}
+
+  defp assign_arm(%Object{} = obj, name, held, ctx, state) do
+    with {:ok, code, state} <- expression(obj.argument, obj.filters, ctx, state) do
+      {:ok, if(held, do: code, else: "put_var(#{ctx}, #{literal(name)}, #{code})"), state}
+    end
+  end
+
+  defp emit_branches(node, kind, state, slot) do
+    with {:ok, test} <- condition(node.condition, "c#{slot}", state),
+         {:ok, chain} <- elsif_chain(node.elsifs, "c#{slot}", state) do
       {then_fun, state} = conditional_body(List.wrap(node.body), state)
       {else_fun, state} = conditional_body(List.wrap(node.else_body), state)
 
       {tail, state} =
         chain
         |> Enum.reverse()
-        |> Enum.reduce({"#{else_fun}(c#{slot}, o)", state}, fn {test_code, branch}, {acc, st} ->
+        |> Enum.reduce({branch(else_fun, "c#{slot}", state), state}, fn {test_code, branch},
+                                                                        {acc, st} ->
           {fun, st} = conditional_body(List.wrap(branch), st)
-          {"if #{test_code} do #{fun}(c#{slot}, o) else #{acc} end", st}
+          {"if #{test_code} do #{branch(fun, "c#{slot}", st)} else #{acc} end", st}
         end)
 
       test = if kind == :if, do: test, else: "!(#{test})"
 
       line =
-        "{o#{slot}, c#{slot + 1}} = if #{test} do #{then_fun}(c#{slot}, o) else #{tail} end"
+        "{o#{slot}, c#{slot + 1}} = if #{test} do #{branch(then_fun, "c#{slot}", state)} else #{tail} end"
 
       {line, "o#{slot}", state, slot + 1}
     else
@@ -812,6 +1158,8 @@ defmodule Gas.Compiler.Codegen do
   end
 
   defp emit_render(node, state, slot) do
+    node = declared_args(node, state)
+
     # `for` iteration compiles only with a known callee, else the tag stays interpreted.
     with {:ok, name, state} <- value(node.template, "c#{slot}", state),
          {:ok, vars, state} when is_binary(vars) <- render_vars(node, "c#{slot}", state) do
@@ -825,18 +1173,30 @@ defmodule Gas.Compiler.Codegen do
     end
   end
 
+  # Under an ordered pass the callee's own module is already built and is only looked up: building
+  # it here is what would define a template inside its own definition. A callee the caller's
+  # constants specialise is a different module — named for its content, unique to those bindings,
+  # so nothing else can be defining it and it is compiled here as it always was.
+  defp callee_module(tree, bound, opts, name) do
+    if Keyword.get(opts, :name_modules, false) and map_size(bound) == 0,
+      do: compiled(tree, bound, Keyword.put(opts, :name, name)),
+      else: ensure_compiled(tree, bound, opts)
+  end
+
   # A fixed `{% render %}` target compiles the callee with the caller's constants bound.
   defp inline_render(node, state, slot) do
-    with true <- state.known != %{},
-         {:ok, name} <- const_value(node.template, state.known),
+    node = declared_args(node, state)
+
+    with {:ok, name} <- const_value(node.template, state.known),
          true <- is_binary(name),
          {:ok, vars_code, state} <- render_vars(node, "c#{slot}", state),
          {:ok, bound} <- const_render_args(node, state.known),
          {:ok, tree} <- load_template(name, state.opts),
          # A callee holding break/continue gets its own module rather than inlining.
-         false <- loop_control?(tree) do
-      {:ok, module} = compile_cached(tree, bound, state.opts)
-
+         false <- loop_control?(tree),
+         # A callee with no module of its own is rendered by name instead: emitting a call to a
+         # module nobody built would raise where the caller runs.
+         {:ok, module} <- callee_module(tree, bound, state.opts, name) do
       case {vars_code, constant_output(module)} do
         # a `for` render repeats its callee, so a constant body still varies in count
         {{:each, var, source}, _} ->
@@ -862,13 +1222,62 @@ defmodule Gas.Compiler.Codegen do
     end
   end
 
-  defp load_template(name, opts) do
-    if Keyword.has_key?(opts, :file_system), do: do_load(name, opts), else: :error
+  # `{% render %}` is isolated, so an argument the callee never names cannot reach it.
+  defp declared_args(%{arguments: arguments} = node, state) when is_map(arguments) do
+    with {:ok, name} <- const_value(node.template, state.known),
+         true <- is_binary(name),
+         {:ok, tree} <- load_template(name, state.opts),
+         read = root_reads(tree, MapSet.new()),
+         false <- opaque_read?(read, state.opts) do
+      %{
+        node
+        | arguments: Map.filter(arguments, &MapSet.member?(read, argument_root(elem(&1, 0))))
+      }
+    else
+      _ -> node
+    end
   end
 
-  defp do_load(name, opts) do
+  defp declared_args(node, _state), do: node
+
+  # A host whose values can carry more liquid names the roots that hide it: given a whole such map
+  # the callee can resolve names no tree of its shows, so its read set is not the whole story.
+  defp opaque_read?(read, opts) do
+    opts |> Keyword.get(:opaque_roots, []) |> Enum.any?(&MapSet.member?(read, &1))
+  end
+
+  defp argument_root(key) do
+    case :binary.split(key, ".") do
+      [root | _rest] -> root
+    end
+  end
+
+  defp root_reads(%Variable{identifier: identifier} = variable, acc),
+    do: variable |> Map.from_struct() |> root_reads(MapSet.put(acc, identifier))
+
+  defp root_reads(list, acc) when is_list(list), do: Enum.reduce(list, acc, &root_reads/2)
+
+  defp root_reads(%{__struct__: _} = struct, acc),
+    do: struct |> Map.from_struct() |> root_reads(acc)
+
+  defp root_reads(tuple, acc) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> root_reads(acc)
+
+  defp root_reads(map, acc) when is_map(map),
+    do: map |> Map.values() |> Enum.reduce(acc, &root_reads/2)
+
+  defp root_reads(_other, acc), do: acc
+
+  # The tree the running pass already parsed for `name`, else the file: callees compile first, so
+  # a caller finds its callee there and the theme is read once however often it is rendered.
+  defp load_template(name, opts) do
+    with :error <- Map.fetch(Keyword.get(opts, :trees, %{}), name) do
+      if Keyword.has_key?(opts, :file_system), do: read_template(name, opts), else: :error
+    end
+  end
+
+  defp read_template(name, opts) do
     case Gas.precompile(name, Keyword.delete(opts, :codegen)) do
-      {:ok, {_name, %Gas.Template{parsed_template: tree}}} -> {:ok, tree}
       {:ok, %Gas.Template{parsed_template: tree}} -> {:ok, tree}
       _other -> :error
     end
@@ -993,6 +1402,11 @@ defmodule Gas.Compiler.Codegen do
 
   defp const_value(%Literal{value: value, interp_ast: nil}, _known), do: {:ok, value}
 
+  # `'bg-{{ s.bg_role }}'` is a literal once the bindings settle what it interpolates. Themes
+  # accumulate class names this way, so leaving these unfolded stops folding at the first one.
+  defp const_value(%Literal{interp_ast: %Gas.Template{parsed_template: tree}}, known),
+    do: const_nodes(List.wrap(tree), known)
+
   defp const_value(%Variable{} = variable, known) do
     case static_keys(variable) do
       nil -> resolve_known(known, const_keys(variable, known))
@@ -1001,6 +1415,32 @@ defmodule Gas.Compiler.Codegen do
   end
 
   defp const_value(_argument, _known), do: :unknown
+
+  defp const_nodes(nodes, known) do
+    Enum.reduce_while(nodes, {:ok, ""}, fn node, {:ok, acc} ->
+      case interpolated_part(node, known) do
+        {:ok, part} -> {:cont, {:ok, acc <> part}}
+        :unknown -> {:halt, :unknown}
+      end
+    end)
+  end
+
+  defp interpolated_part(%Text{text: text}, _known), do: {:ok, text}
+
+  defp interpolated_part(%Object{argument: argument, filters: filters}, known) do
+    with {:ok, value} <- const_expression(argument, filters, known),
+         {:ok, string} <- stringify_const(value) do
+      {:ok, string}
+    end
+  end
+
+  defp interpolated_part(_node, _known), do: :unknown
+
+  defp stringify_const(value) do
+    {:ok, Gas.Argument.stringify!(value)}
+  rescue
+    _ -> :unknown
+  end
 
   # `block.blocks[key]` is fixed once `key` is.
   defp const_keys(%Variable{identifier: identifier, accesses: accesses}, known) do
@@ -1151,9 +1591,9 @@ defmodule Gas.Compiler.Codegen do
     end)
   end
 
-  defp elsif_chain(elsifs, ctx, known) do
+  defp elsif_chain(elsifs, ctx, state) do
     Enum.reduce_while(List.wrap(elsifs), {:ok, []}, fn {test, branch}, {:ok, acc} ->
-      case condition(test, ctx, known) do
+      case condition(test, ctx, state) do
         {:ok, code} -> {:cont, {:ok, acc ++ [{code, branch}]}}
         :error -> {:halt, :error}
       end
@@ -1163,17 +1603,32 @@ defmodule Gas.Compiler.Codegen do
   # ---- expressions -------------------------------------------------------
   defp expression(argument, filters, ctx, state) do
     case value(argument, ctx, state) do
-      {:ok, base, state} -> filter_chain(base, filters, ctx, state)
+      {:ok, base, state} -> guarded_chain(base, filters, ctx, state)
       :error -> :error
     end
   end
+
+  # A chain with no filters cannot raise a filter error, so it is left bare.
+  defp guarded_chain(base, filters, ctx, state) when filters in [nil, []],
+    do: filter_chain(base, filters, ctx, state)
+
+  defp guarded_chain(base, filters, ctx, state) do
+    with {:ok, code, state} <- filter_chain(base, filters, ctx, state) do
+      line = filters |> List.wrap() |> List.first() |> filter_line()
+
+      {:ok, "(try do #{code} rescue e -> filter_error(e, __STACKTRACE__, #{line}) end)", state}
+    end
+  end
+
+  defp filter_line(%{loc: %{line: line}}), do: line
+  defp filter_line(_filter), do: 0
 
   defp value(%Literal{value: value, interp_ast: nil}, _ctx, state),
     do: {:ok, literal(value), state}
 
   defp value(%Literal{interp_ast: %Gas.Template{parsed_template: sub}}, ctx, state) do
     {fun, state} = body(List.wrap(sub), state)
-    {:ok, "IO.iodata_to_binary(elem(#{fun}(#{ctx}, o), 0))", state}
+    {:ok, "IO.iodata_to_binary(elem(#{fun}(#{ctx}, o, e), 0))", state}
   end
 
   defp value(%Gas.Range{start: start, finish: finish}, ctx, state) do
@@ -1191,12 +1646,233 @@ defmodule Gas.Compiler.Codegen do
       keys ->
         case resolve_known(state.known, keys) do
           {:ok, value} -> {:ok, literal(value), state}
-          :unknown -> {:ok, "get(#{ctx}, #{literal(keys)}, o)", state}
+          :unknown -> read(keys, ctx, state)
         end
     end
   end
 
   defp value(_other, _ctx, _state), do: :error
+
+  # Only against a body's entry context: a node that can rebind a variable advances the context,
+  # so a read after one never sees a binding hoisted above it.
+  defp read(keys, ctx, state), do: dealias(keys, state.aliases) |> emit_read(ctx, state)
+
+  # An alias stands for the path it was bound to, so its reads share that path's hoist.
+  defp dealias([root | rest] = keys, aliases) do
+    case Map.fetch(aliases, root) do
+      {:ok, path} -> path ++ rest
+      :error -> keys
+    end
+  end
+
+  defp emit_read([name], _ctx, %{locals: locals} = state) when is_map_key(locals, name),
+    do: {:ok, Map.fetch!(locals, name), state}
+
+  defp emit_read(keys, ctx, state) do
+    case Map.fetch(state.extracts, keys) do
+      {:ok, index} -> {:ok, extracted(index, ctx, state), state}
+      :error -> emit_hoisted(keys, ctx, state)
+    end
+  end
+
+  # A setting can hold liquid, and it renders against the context reading it, not the one that
+  # extracted it — so a hoisted read resolves where it is used.
+  defp extracted(index, ctx, state) do
+    if MapSet.member?(state.raw_extracts, index),
+      do: "res(elem(e, #{index}), #{ctx}, o)",
+      else: "elem(e, #{index})"
+  end
+
+  defp emit_hoisted([_, _ | _] = keys, "c0" = ctx, %{hoists: hoists} = state)
+       when is_list(hoists) do
+    {prefix, [last]} = Enum.split(keys, length(keys) - 1)
+    {binding, state} = hoist(prefix, state)
+
+    {:ok, "resolve(walk(#{binding}, #{literal([last])}), #{ctx}, o)", state}
+  end
+
+  defp emit_hoisted(keys, ctx, state), do: {:ok, "get(#{ctx}, #{literal(keys)}, o)", state}
+
+  # `{% assign s = block.settings %}` makes every `s.x` an alias for `block.settings.x`. Only a
+  # name bound once in the whole tree qualifies, so no branch or iteration can rebind it.
+  defp aliases(tree, bound) do
+    Enum.reduce(tree, %{}, fn node, acc ->
+      case alias_of(node, bound) do
+        {name, path} -> Map.put(acc, name, path)
+        nil -> acc
+      end
+    end)
+  end
+
+  defp alias_of(
+         %AssignTag{
+           argument: %Variable{identifier: name, accesses: []},
+           object: %Object{argument: %Variable{} = source, filters: []}
+         },
+         bound
+       ) do
+    with 1 <- Map.get(bound, name),
+         [_, _ | _] = keys <- static_keys(source),
+         false <- Map.has_key?(bound, hd(keys)),
+         false <- hd(keys) in @runtime_bound do
+      {name, keys}
+    else
+      _ -> nil
+    end
+  end
+
+  defp alias_of(_node, _bound), do: nil
+
+  # Every name any node binds, however deep, so a rebinding anywhere disqualifies the alias.
+  # A capture or an iteration variable is counted twice: neither can ever be an alias.
+  defp bindings(%AssignTag{argument: %Variable{identifier: name}} = node, acc) do
+    node |> Map.from_struct() |> Map.delete(:argument) |> bindings(count(acc, name))
+  end
+
+  defp bindings(%CaptureTag{argument: %Variable{identifier: name}} = node, acc) do
+    bindings(node.body, acc |> count(name) |> count(name))
+  end
+
+  defp bindings(%Gas.Tags.CounterTag{argument: %Variable{identifier: name}}, acc) do
+    acc |> count(name) |> count(name)
+  end
+
+  defp bindings(%ForTag{variable: %Variable{identifier: name}} = node, acc) do
+    bindings([node.body, node.else_body], acc |> count(name) |> count(name))
+  end
+
+  defp bindings(%Gas.Tags.TablerowTag{variable: %Variable{identifier: name}} = node, acc) do
+    bindings(Map.from_struct(node), acc |> count(name) |> count(name))
+  end
+
+  defp bindings(list, acc) when is_list(list), do: Enum.reduce(list, acc, &bindings(&1, &2))
+
+  defp bindings(%{__struct__: _} = struct, acc),
+    do: struct |> Map.from_struct() |> bindings(acc)
+
+  defp bindings(tuple, acc) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> bindings(acc)
+
+  defp bindings(map, acc) when is_map(map),
+    do: map |> Map.values() |> Enum.reduce(acc, &bindings(&1, &2))
+
+  defp bindings(_other, acc), do: acc
+
+  defp count(acc, name), do: Map.update(acc, name, 1, &(&1 + 1))
+
+  # Every entry-rooted path the template reads, grouped by parent, so one `get_map_elements` at
+  # entry answers every read of that parent — wherever in the template the read sits.
+  defp extract_groups(tree, aliases, bound) do
+    tree
+    |> read_paths([])
+    |> Enum.map(&dealias(&1, aliases))
+    |> Enum.filter(fn [root | _] ->
+      not Map.has_key?(bound, root) and root not in @runtime_bound
+    end)
+    |> Enum.frequencies()
+    |> Enum.filter(fn
+      {[_bare], reads} -> reads > 1
+      {_path, _reads} -> true
+    end)
+    |> Enum.map(fn {keys, _reads} -> keys end)
+    |> Enum.group_by(fn keys -> Enum.slice(keys, 0..-2//1) end, &List.last/1)
+    |> Enum.sort()
+  end
+
+  defp raw_extracts(groups) do
+    {set, _next} =
+      Enum.reduce(groups, {MapSet.new(), 0}, fn {prefix, keys}, {set, next} ->
+        set =
+          if prefix == [],
+            do: set,
+            else: Enum.reduce(next..(next + length(keys) - 1), set, &MapSet.put(&2, &1))
+
+        {set, next + length(keys)}
+      end)
+
+    set
+  end
+
+  defp extract_table(groups) do
+    {table, _next} =
+      Enum.reduce(groups, {%{}, 0}, fn {prefix, keys}, {table, next} ->
+        Enum.reduce(Enum.with_index(keys, next), {table, next + length(keys)}, fn {key, i},
+                                                                                  {acc, n} ->
+          {Map.put(acc, prefix ++ [key], i), n}
+        end)
+      end)
+
+    table
+  end
+
+  defp extract_source([]), do: "e = {}"
+
+  defp extract_source(groups) do
+    {lines, bound} = extract_bindings(groups)
+
+    Enum.join(lines ++ ["e = {#{Enum.join(bound, ", ")}}"], "\n            ")
+  end
+
+  defp extract_bindings(groups) do
+    groups
+    |> Enum.with_index()
+    |> Enum.reduce({[], []}, fn {{prefix, keys}, g}, {lines, bound} ->
+      slots = Enum.with_index(keys)
+      names = Enum.map(slots, fn {_key, i} -> "x#{g}_#{i}" end)
+      pattern = Enum.map_join(slots, ", ", fn {key, i} -> "#{literal(key)} => v#{i}" end)
+      fast = Enum.map_join(slots, ", ", fn {_key, i} -> "v#{i}" end)
+      slow = Enum.map_join(keys, ", ", fn key -> "walk(p#{g}, #{literal([key])})" end)
+
+      {lines ++ extract_lines(prefix, g, names, keys, pattern, fast, slow), bound ++ names}
+    end)
+  end
+
+  # A bare name has no parent map to match against — `Gas.render/3` will even put a plain vars
+  # map in `counter_vars` — so it takes the same scope walk `get/3` would, once.
+  defp extract_lines([], _g, names, keys, _pattern, _fast, _slow) do
+    Enum.zip(names, keys)
+    |> Enum.map(fn {name, key} ->
+      "#{name} = resolve(lookup(ctx, #{literal([key])}), ctx, opts)"
+    end)
+  end
+
+  defp extract_lines(prefix, g, names, _keys, pattern, fast, slow) do
+    [
+      "p#{g} = lookup(ctx, #{literal(prefix)})",
+      "{#{Enum.join(names, ", ")}} = case p#{g} do %{#{pattern}} -> {#{fast}}; _ -> {#{slow}} end"
+    ]
+  end
+
+  defp read_paths(%Variable{} = variable, acc) do
+    case static_keys(variable) do
+      nil -> variable |> Map.from_struct() |> read_paths(acc)
+      keys -> [keys | acc]
+    end
+  end
+
+  defp read_paths(list, acc) when is_list(list), do: Enum.reduce(list, acc, &read_paths(&1, &2))
+
+  defp read_paths(%{__struct__: _} = struct, acc),
+    do: struct |> Map.from_struct() |> read_paths(acc)
+
+  defp read_paths(tuple, acc) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> read_paths(acc)
+
+  defp read_paths(map, acc) when is_map(map),
+    do: map |> Map.values() |> Enum.reduce(acc, &read_paths(&1, &2))
+
+  defp read_paths(_other, acc), do: acc
+
+  defp hoist(prefix, state) do
+    case List.keyfind(state.hoists, prefix, 0) do
+      {^prefix, binding} ->
+        {binding, state}
+
+      nil ->
+        binding = "h#{length(state.hoists)}"
+        {binding, %{state | hoists: state.hoists ++ [{prefix, binding}]}}
+    end
+  end
 
   # A bound root settles the path: a missing key under it is nil, not unknown.
   defp resolve_known(known, [root | rest]) do
@@ -1323,49 +1999,49 @@ defmodule Gas.Compiler.Codegen do
 
   # ---- conditions --------------------------------------------------------
   # `and`/`or` fold only as a whole, so a settled half still reaches here.
-  defp condition(test, ctx, known) do
-    case const_condition(test, known) do
+  defp condition(test, ctx, state) do
+    case const_condition(test, state.known) do
       {:ok, value} -> {:ok, literal(value)}
-      :unknown -> runtime_condition(test, ctx, known)
+      :unknown -> runtime_condition(test, ctx, state)
     end
   end
 
-  defp runtime_condition(%Gas.UnaryCondition{child_condition: nil} = test, ctx, known) do
+  defp runtime_condition(%Gas.UnaryCondition{child_condition: nil} = test, ctx, state) do
     with true <- test.argument_filters in [nil, []],
-         {:ok, code} <- condition_value(test.argument, ctx, known) do
+         {:ok, code} <- condition_value(test.argument, ctx, state) do
       {:ok, "truthy(#{code})"}
     else
       _ -> :error
     end
   end
 
-  defp runtime_condition(%Gas.BinaryCondition{child_condition: nil} = test, ctx, known) do
+  defp runtime_condition(%Gas.BinaryCondition{child_condition: nil} = test, ctx, state) do
     with true <- test.left_argument_filters in [nil, []],
          true <- test.right_argument_filters in [nil, []],
          true <- test.operator in @operators,
-         {:ok, left} <- condition_value(test.left_argument, ctx, known),
-         {:ok, right} <- condition_value(test.right_argument, ctx, known) do
+         {:ok, left} <- condition_value(test.left_argument, ctx, state),
+         {:ok, right} <- condition_value(test.right_argument, ctx, state) do
       {:ok, "compare(#{left}, #{literal(test.operator)}, #{right})"}
     else
       _ -> :error
     end
   end
 
-  defp runtime_condition(%mod{child_condition: {joiner, child}} = test, ctx, known)
+  defp runtime_condition(%mod{child_condition: {joiner, child}} = test, ctx, state)
        when mod in [Gas.BinaryCondition, Gas.UnaryCondition] and joiner in [:and, :or] do
-    with {:ok, left} <- condition(%{test | child_condition: nil}, ctx, known),
-         {:ok, right} <- condition(child, ctx, known) do
+    with {:ok, left} <- condition(%{test | child_condition: nil}, ctx, state),
+         {:ok, right} <- condition(child, ctx, state) do
       {:ok, "(#{left} #{joiner} #{right})"}
     else
       _ -> :error
     end
   end
 
-  defp runtime_condition(_other, _ctx, _known), do: :error
+  defp runtime_condition(_other, _ctx, _state), do: :error
 
-  # A condition has nowhere to put a helper function, so one that needs it must not compile.
-  defp condition_value(argument, ctx, known) do
-    case value(argument, ctx, new_state(known, [])) do
+  # A condition has nowhere to put a helper function or a hoisted binding, so it takes neither.
+  defp condition_value(argument, ctx, state) do
+    case value(argument, ctx, %{state | hoists: :off, funs: []}) do
       {:ok, code, %{funs: []}} -> {:ok, code}
       _other -> :error
     end
@@ -1379,19 +2055,21 @@ defmodule Gas.Compiler.Codegen do
       fallbacks: 0,
       nodes: 0,
       known: known,
-      opts: opts,
+      # A name belongs to the one tree being compiled. Left in, every nested compile this state
+      # reaches — a callee, a setting's liquid — would claim the module the file answers to.
+      opts: Keyword.delete(opts, :name),
       touched: MapSet.new(),
-      const_bodies: %{}
+      const_bodies: %{},
+      pure_bodies: %{},
+      hoists: [],
+      aliases: %{},
+      extracts: %{},
+      raw_extracts: MapSet.new(),
+      locals: %{}
     }
 
   # `inspect/1` defaults truncate, which would emit a shortened template, not fail.
   defp literal(term), do: inspect(term, limit: :infinity, printable_limit: :infinity)
-
-  # The recorded constant is Elixir source; evaluate it once so callers splice a value.
-  defp constant_value(source) do
-    {value, _bindings} = Code.eval_string(source)
-    value
-  end
 
   defp forget(state, name) do
     %{state | known: Map.delete(state.known, name), touched: MapSet.put(state.touched, name)}

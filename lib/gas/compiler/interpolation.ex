@@ -10,9 +10,11 @@ defmodule Gas.Compiler.Interpolation do
 
   alias Gas.{InterpolatedString, Literal, Template, Text, Variable}
 
+  # No codegen: codegen emits an interpolated literal into its template's own module, so a module
+  # compiled here is one nothing calls.
   @spec expand(Template.t(), keyword) :: Template.t()
   def expand(%Template{parsed_template: tree} = template, opts) do
-    %{template | parsed_template: walk_tree(tree, opts)}
+    %{template | parsed_template: walk_tree(tree, Keyword.delete(opts, :codegen))}
   end
 
   defp walk_tree(list, opts) when is_list(list), do: Enum.map(list, &walk_tree(&1, opts))
@@ -57,6 +59,12 @@ defmodule Gas.Compiler.Interpolation do
 
   defp walk_tree(other, _opts), do: other
 
+  @doc """
+  Replaces every string carrying liquid with the parsed template it stands for.
+
+  A string is data, so what it compiles to is named after its content and counts
+  against the `:max_compiled_modules` ceiling rather than being unbounded.
+  """
   @spec normalize_vars(map | any, keyword) :: map | any
   def normalize_vars(vars, opts \\ [])
 

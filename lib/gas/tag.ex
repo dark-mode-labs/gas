@@ -34,7 +34,18 @@ defmodule Gas.Tag do
   """
   @callback gas_assigns_nothing?() :: boolean
 
-  @optional_callbacks gas_rewrite: 2, gas_assigns_nothing?: 0
+  @doc """
+  Whether this tag reads values only the request can supply.
+
+  A tag answering `true` is compiled to a call of its `Gas.Renderable`
+  implementation instead of being handed back to the interpreter: what it does
+  is fixed even though what it reads is not. Answer `true` only where
+  `gas_rewrite/2` cannot succeed for want of a value, never to excuse a tag the
+  compiler ought to understand.
+  """
+  @callback gas_renders_at_runtime?() :: boolean
+
+  @optional_callbacks gas_rewrite: 2, gas_assigns_nothing?: 0, gas_renders_at_runtime?: 0
 
   def default_tags do
     %{

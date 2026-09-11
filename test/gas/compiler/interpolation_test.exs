@@ -143,7 +143,7 @@ defmodule Gas.Compiler.InterpolationTest do
 
       Interpolation.normalize_vars(vars, opts)
       assert_received {:enqueued, tree}
-      assert {:ok, _module} = Gas.Compiler.Codegen.compile_cached(tree, %{}, opts)
+      assert {:ok, _module} = Gas.Compiler.Codegen.ensure_compiled(tree, %{}, opts)
 
       assert %InterpolatedString{ast: %Template{module: module}} =
                Interpolation.normalize_vars(vars, opts)["t"]
