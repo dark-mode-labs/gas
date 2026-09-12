@@ -1708,10 +1708,72 @@ defmodule Gas.Compiler.CodegenTest do
 
       assert resolves(source, ctx) == "[bye!]"
     end
+
+    # A filter makes the assign hold the rendered value instead of standing in for the setting,
+    # so this is the one that reads a context the deferred write has not reached.
+    # A captured body the bindings settle folds to a string, and the fold answers reads here; the
+    # setting's liquid reads the context instead, so the write has to happen anyway.
+    test "resolves against a capture the compiler folded", ctx do
+      source = "{% capture greeting %}held{% endcapture %}[{{ block.settings.tpl }}]"
+      assert resolves(source, ctx) == "[held!]"
+    end
+
+    test "resolves when a filter makes the assign hold the value", ctx do
+      source =
+        "{% assign greeting = who %}{% assign out = block.settings.tpl | append: '' %}[{{ out }}]"
+
+      assert resolves(source, ctx) == "[hi!]"
+    end
   end
 
   # A loop variable shadows whatever the name held coming in, and the bindings the compiler
   # settled before the loop are exactly what would keep the old value folded in the body.
+  # `iteration_vars` is read before `vars`, so the loop variable answers a read of its own name
+  # even after the body assigns it; the write is still there once the loop ends.
+  # A loop binds its variable and its `forloop`, and `iteration_vars` answers both before `vars`,
+  # so nothing the body writes under those names can be read back inside it.
+  describe "a capture or builtin under the loop variable's name" do
+    test "a capture does not answer reads the loop variable owns" do
+      assert both("{% for acc in ys %}{% capture acc %}X{% endcapture %}{{ acc }}{% endfor %}", %{
+               "ys" => ~w(1 2)
+             }) == "12"
+    end
+
+    test "the captured value is what the name holds after the loop" do
+      assert both(
+               "{% for acc in ys %}{% capture acc %}X{% endcapture %}{% endfor %}[{{ acc }}]",
+               %{
+                 "ys" => ~w(1 2)
+               }
+             ) == "[X]"
+    end
+
+    test "assigning forloop does not take over the loop's own" do
+      assert both("{% for i in ys %}{% assign forloop = 'X' %}{{ forloop.index }}{% endfor %}", %{
+               "ys" => ~w(1 2)
+             }) == "12"
+    end
+  end
+
+  describe "an assign to the loop variable's own name" do
+    test "the loop variable still answers reads inside the body" do
+      assert both("{% for acc in ys %}{% assign acc = 'X' %}{{ acc }}{% endfor %}", %{
+               "ys" => ~w(1 2)
+             }) == "12"
+    end
+
+    test "the write is what the name holds after the loop" do
+      assert both("{% for acc in ys %}{% assign acc = 'X' %}{% endfor %}[{{ acc }}]", %{
+               "ys" => ~w(1 2)
+             }) == "[X]"
+    end
+
+    test "a loop over a range settles the same way" do
+      assert both("{% for acc in (1..2) %}{% assign acc = 'X' %}{{ acc }}{% endfor %}", %{}) ==
+               "12"
+    end
+  end
+
   describe "a loop variable that shadows a name already assigned" do
     test "the body reads the item, not the value assigned before the loop" do
       assert both("{% assign i = 'outer' %}{% for i in xs %}{{ i }}{% endfor %}[{{ i }}]", %{

@@ -542,7 +542,12 @@ defmodule Gas.Compiler.Codegen do
         names -> Map.drop(state.locals, MapSet.to_list(names))
       end
 
-    {line, "[]", %{state | locals: Map.put(kept, name, local)}, slot + 1}
+    locals =
+      if MapSet.member?(state.iterating, name),
+        do: Map.delete(kept, name),
+        else: Map.put(kept, name, local)
+
+    {line, "[]", %{state | locals: locals}, slot + 1}
   end
 
   defp emit_nodes([], steps, state, slot), do: {Enum.reverse(steps), state, slot}
@@ -584,18 +589,22 @@ defmodule Gas.Compiler.Codegen do
   end
 
   defp pending_step(pending, slot) do
-    writes =
-      pending
-      |> Enum.sort()
-      |> Enum.map_join(", ", fn {name, local} -> "#{literal(name)} => #{local}" end)
-
     %{
-      line: "c#{slot + 1} = %{c#{slot} | vars: Map.merge(c#{slot}.vars, %{#{writes}})}",
+      line: merge_line(pending, slot),
       out: "[]",
       const?: false,
       throws?: false,
       ctx: "c#{slot + 1}"
     }
+  end
+
+  defp merge_line(pending, slot) do
+    writes =
+      pending
+      |> Enum.sort()
+      |> Enum.map_join(", ", fn {name, local} -> "#{literal(name)} => #{local}" end)
+
+    "c#{slot + 1} = %{c#{slot} | vars: Map.merge(c#{slot}.vars, %{#{writes}})}"
   end
 
   # A body hands its context back, so whatever is still pending has to land before it does.
@@ -605,30 +614,11 @@ defmodule Gas.Compiler.Codegen do
   defp close_pending(steps, %{pending: pending} = state, slot),
     do: {steps ++ [pending_step(pending, slot)], %{state | pending: %{}}, slot + 1}
 
-  # A path through a pending name goes back to the context, so that name has to have landed.
-  defp reads_context?(%AssignTag{} = node, pending), do: reads_through?(node, pending)
+  # An assign settles its own writes against the code it emitted, and text reads nothing; anything
+  # else is handed the context and so has to be given a current one.
+  defp reads_context?(%AssignTag{}, _pending), do: false
   defp reads_context?(%Gas.Text{}, _pending), do: false
   defp reads_context?(_node, _pending), do: true
-
-  defp reads_through?(node, pending),
-    do: Enum.any?(walked_roots(node, []), &is_map_key(pending, &1))
-
-  defp walked_roots(%Variable{identifier: id, accesses: accesses}, acc),
-    do: if(accesses == [], do: acc, else: [id | acc])
-
-  defp walked_roots(list, acc) when is_list(list),
-    do: Enum.reduce(list, acc, &walked_roots(&1, &2))
-
-  defp walked_roots(%{__struct__: _} = struct, acc),
-    do: struct |> Map.from_struct() |> walked_roots(acc)
-
-  defp walked_roots(tuple, acc) when is_tuple(tuple),
-    do: tuple |> Tuple.to_list() |> walked_roots(acc)
-
-  defp walked_roots(map, acc) when is_map(map),
-    do: map |> Map.values() |> Enum.reduce(acc, &walked_roots(&1, &2))
-
-  defp walked_roots(_other, acc), do: acc
 
   # A condition the bindings settle contributes its branch to this body rather than a function of
   # its own, so what the branch assigns keeps folding into the nodes that follow it.
@@ -771,20 +761,23 @@ defmodule Gas.Compiler.Codegen do
   end
 
   defp emit(%AssignTag{argument: target, object: %Object{} = obj} = node, state, slot) do
-    case expression(obj.argument, obj.filters, "c#{slot}", state) do
+    # With writes waiting this is written against the context a flush would produce, so whether the
+    # flush is needed is read off the code that came out rather than predicted from the tree. With
+    # nothing waiting the context is named as it stands, which is what a hoisted prefix needs.
+    waiting? = state.pending != %{}
+    ctx = if waiting?, do: "c#{slot + 1}", else: "c#{slot}"
+
+    case expression(obj.argument, obj.filters, ctx, state) do
       {:ok, code, state} ->
         name = to_string(target)
-        state = rebind(state, name, const_assign(obj, state.known))
-        local = "v#{slot}"
+        {settled, state, slot} = settle(code, ctx, waiting?, state, slot)
 
-        state = %{
-          state
-          | locals: Map.put(state.locals, name, local),
-            pending: Map.put(state.pending, name, local)
-        }
+        {line, out, state, next} =
+          if MapSet.member?(state.iterating, name),
+            do: assign_shadowed(name, code, state, slot),
+            else: assign_local(name, code, obj, state, slot)
 
-        {"#{local} = #{code}
-        c#{slot + 1} = c#{slot}", "[]", state, slot + 1}
+        {settled <> line, out, state, next}
 
       :error ->
         fallback(state, slot, node)
@@ -794,11 +787,19 @@ defmodule Gas.Compiler.Codegen do
   defp emit(%CaptureTag{argument: target, body: inner}, state, slot) do
     name = to_string(target)
 
-    case const_nodes(List.wrap(inner), state.known) do
+    # Folding a capture the loop binds would answer reads the loop variable owns, and would leave
+    # the write it stands for nowhere.
+    constant =
+      if MapSet.member?(state.iterating, name),
+        do: :unknown,
+        else: const_nodes(List.wrap(inner), state.known)
+
+    case constant do
       # Themes build class fragments by capturing them; a captured body the bindings settle is a
       # string, and leaving it unfolded stops the accumulation that follows from folding at all.
+      # The write still has to happen: a setting holding liquid reads the context, not the fold.
       {:ok, captured} ->
-        {"", "[]", rebind(state, name, {:ok, captured}), slot}
+        captured_constant(name, captured, state, slot)
 
       :unknown ->
         emit_capture(inner, name, state, slot)
@@ -860,6 +861,53 @@ defmodule Gas.Compiler.Codegen do
             else: fallback(state, slot, node)
       end
     end
+  end
+
+  defp iterating(state, key),
+    do: %{state | iterating: MapSet.union(state.iterating, MapSet.new([key | @runtime_bound]))}
+
+  defp restore_iterating({fun, state}, outer),
+    do: {fun, %{state | iterating: outer.iterating}}
+
+  # `iteration_vars` is read before `vars`, so a loop variable of the same name answers every read
+  # until the loop ends: the write lands in the context and nothing reads it from a local.
+  defp assign_shadowed(name, code, state, slot) do
+    {"c#{slot + 1} = put_var(c#{slot}, #{literal(name)}, #{code})", "[]", forget(state, name),
+     slot + 1}
+  end
+
+  defp captured_constant(name, captured, state, slot) do
+    state = rebind(state, name, {:ok, captured})
+    held(name, literal(captured), state, slot)
+  end
+
+  defp assign_local(name, code, obj, state, slot) do
+    state = rebind(state, name, const_assign(obj, state.known))
+    held(name, code, state, slot)
+  end
+
+  # The value waits in a variable and the context write waits with it, so a run of these costs
+  # one map write between them.
+  defp held(name, code, state, slot) do
+    local = "v#{slot}"
+
+    state = %{
+      state
+      | locals: Map.put(state.locals, name, local),
+        pending: Map.put(state.pending, name, local)
+    }
+
+    {"#{local} = #{code}\n        c#{slot + 1} = c#{slot}", "[]", state, slot + 1}
+  end
+
+  # The expression names this context only if it reads one; when it does, the writes waiting have
+  # to land in it first, and when it does not the name is carried forward unchanged.
+  defp settle(_code, _ctx, false, state, slot), do: {"", state, slot}
+
+  defp settle(code, ctx, true, %{pending: pending} = state, slot) do
+    if String.contains?(code, ctx),
+      do: {merge_line(pending, slot) <> "\n        ", %{state | pending: %{}}, slot + 1},
+      else: {"#{ctx} = c#{slot}\n        ", state, slot + 1}
   end
 
   # A body whose whole output is fixed, or which touches no context, is inlined at the call site.
@@ -977,10 +1025,14 @@ defmodule Gas.Compiler.Codegen do
       outer = state.known
 
       {body_fun, state} =
-        conditional_body(
-          List.wrap(node.body),
-          loop_known(state, node.body, [key | @runtime_bound])
+        node.body
+        |> List.wrap()
+        |> conditional_body(
+          state
+          |> loop_known(node.body, [key | @runtime_bound])
+          |> iterating(key)
         )
+        |> restore_iterating(state)
 
       state = loop_known(%{state | known: outer}, node.body, [])
       {else_fun, state} = conditional_body(List.wrap(node.else_body), state)
@@ -1085,7 +1137,12 @@ defmodule Gas.Compiler.Codegen do
                                                         {steps, outs, st, ctx} ->
           bound = bind_iteration(st.known, key, element, index, length, for_name)
 
-          {fun, st} = body(List.wrap(node.body), %{st | known: bound})
+          {fun, st} =
+            node.body
+            |> List.wrap()
+            |> body(iterating(%{st | known: bound}, key))
+            |> restore_iterating(st)
+
           next = "cu#{slot}_#{index}"
 
           bind =
@@ -2228,6 +2285,7 @@ defmodule Gas.Compiler.Codegen do
       raw_extracts: MapSet.new(),
       locals: %{},
       pending: %{},
+      iterating: MapSet.new(),
       body_args: %{}
     }
 
