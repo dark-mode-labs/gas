@@ -205,7 +205,7 @@ defmodule Gas.Compiler.CodegenTest do
     rendered
   end
 
-  defp emitted_source(source, known \\ %{}, opts \\ []) do
+  defp emitted_source(source, known, opts \\ []) do
     template = compiled_template(source, opts)
     mod = Module.concat([Gas.CodegenCase, "Src#{System.unique_integer([:positive])}"])
     {src, _data, _covered, _total} = Codegen.source(template.parsed_template, mod, known, opts)
@@ -1752,6 +1752,45 @@ defmodule Gas.Compiler.CodegenTest do
       assert both("{% for i in ys %}{% assign forloop = 'X' %}{{ forloop.index }}{% endfor %}", %{
                "ys" => ~w(1 2)
              }) == "12"
+    end
+  end
+
+  # A superseded assign leaves its value written and never read, and warns about it.
+  describe "a value the body never reads back" do
+    defp diagnostics_compiling(source) do
+      template = compiled_template(source)
+      module = Module.concat([Gas.Compiled, :"c_#{System.unique_integer([:positive])}"])
+
+      {_result, diagnostics} =
+        Code.with_diagnostics(fn ->
+          {generated, _data, _covered, _total} =
+            Codegen.source(template.parsed_template, module, %{}, [])
+
+          Code.compile_string(generated)
+        end)
+
+      diagnostics
+    end
+
+    test "compiles without a warning, and still renders the last write" do
+      source = "{% assign a = 'x' %}{% assign a = 'y' %}[{{ a }}]"
+
+      assert diagnostics_compiling(source) == []
+      assert both(source, %{}) == "[y]"
+    end
+
+    test "compiles without a warning when the superseded value was read in between" do
+      source = "{% assign a = 'x' %}[{{ a }}]{% assign a = 'y' %}[{{ a }}]"
+
+      assert diagnostics_compiling(source) == []
+      assert both(source, %{}) == "[x][y]"
+    end
+
+    test "compiles without a warning when the name is written three times" do
+      source = "{% assign a = x %}{% assign a = y %}{% assign a = z %}[{{ a }}]"
+
+      assert diagnostics_compiling(source) == []
+      assert both(source, %{"x" => "1", "y" => "2", "z" => "3"}) == "[3]"
     end
   end
 

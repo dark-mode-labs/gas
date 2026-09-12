@@ -436,6 +436,18 @@ defmodule Gas.Compiler.Codegen do
     ~r/\b(b\d+)\(/ |> Regex.scan(fun) |> MapSet.new(&Enum.at(&1, 1))
   end
 
+  # A value the body never reads back is named as unread, so the module warns about nothing.
+  defp mark_unread(fun) do
+    ~r/(?<![a-z0-9_])v\d+(?![0-9a-z_])/
+    |> Regex.scan(fun)
+    |> Enum.map(&hd/1)
+    |> Enum.frequencies()
+    |> Enum.filter(fn {_local, seen} -> seen == 1 end)
+    |> Enum.reduce(fun, fn {local, _seen}, acc ->
+      String.replace(acc, ~r/(?<![a-z0-9_])#{local} = /, "_#{local} = ")
+    end)
+  end
+
   defp param_list(params), do: Enum.map_join(params, "", fn {_name, p} -> ", #{p}" end)
 
   defp param_discards(params),
@@ -484,6 +496,7 @@ defmodule Gas.Compiler.Codegen do
       end)
 
     lines = prologue ++ (steps |> Enum.map(& &1.line) |> Enum.reject(&(&1 == "")))
+
     outs = Enum.map(steps, &{&1.out, &1.const?})
     merged = merge_constants(outs)
 
@@ -519,7 +532,7 @@ defmodule Gas.Compiler.Codegen do
     {name,
      %{
        state
-       | funs: [fun | state.funs],
+       | funs: [mark_unread(fun) | state.funs],
          hoists: outer_hoists,
          locals: outer_locals,
          pending: outer_pending
@@ -848,19 +861,22 @@ defmodule Gas.Compiler.Codegen do
   end
 
   defp emit(node, state, slot) do
-    if renders_nothing?(node) do
-      {"", "[]", state, slot}
-    else
-      case rewrite(node, state.known) do
-        {:ok, replacement} ->
-          emit_rewritten(replacement, state, slot)
+    if renders_nothing?(node),
+      do: {"", "[]", state, slot},
+      else: emit_rewritten_or_kept(node, state, slot)
+  end
 
-        :error ->
-          if renders_at_runtime?(node),
-            do: emit_at_runtime(state, slot, node),
-            else: fallback(state, slot, node)
-      end
+  defp emit_rewritten_or_kept(node, state, slot) do
+    case rewrite(node, state.known) do
+      {:ok, replacement} -> emit_rewritten(replacement, state, slot)
+      :error -> emit_kept(node, state, slot)
     end
+  end
+
+  defp emit_kept(node, state, slot) do
+    if renders_at_runtime?(node),
+      do: emit_at_runtime(state, slot, node),
+      else: fallback(state, slot, node)
   end
 
   defp iterating(state, key),
@@ -1641,9 +1657,7 @@ defmodule Gas.Compiler.Codegen do
 
   defp interpolated_part(%Object{argument: argument, filters: filters}, known) do
     with {:ok, value} <- const_expression(argument, filters, known),
-         {:ok, string} <- stringify_const(value) do
-      {:ok, string}
-    end
+         do: stringify_const(value)
   end
 
   defp interpolated_part(_node, _known), do: :unknown

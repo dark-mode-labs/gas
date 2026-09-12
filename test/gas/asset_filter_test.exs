@@ -116,6 +116,28 @@ defmodule Gas.AssetFilterTest do
     end
   end
 
+  # An inline SVG is written with spaces, which `URI.new/1` rejects and the image was dropped.
+  describe "image_url on a data URI" do
+    setup do
+      configure(ProxyResolver)
+    end
+
+    @svg "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56'%3E%3C/svg%3E"
+
+    test "hands back an inline SVG unchanged, spaces and all" do
+      assert render("{{ logo | image_url: width: 300 }}", %{"logo" => @svg}) == @svg
+    end
+
+    test "hands it back whatever sizing was asked for, since there is nothing to resize" do
+      assert render("{{ logo | image_url: height: 32 }}", %{"logo" => @svg}) == @svg
+    end
+
+    test "hands back a data URI that needs no encoding" do
+      encoded = String.replace(@svg, " ", "%20")
+      assert render("{{ logo | image_url: width: 300 }}", %{"logo" => encoded}) == encoded
+    end
+  end
+
   describe "image_url resolver" do
     test "falls back to fetch_url/1 when the resolver does not take options" do
       configure(LegacyResolver)

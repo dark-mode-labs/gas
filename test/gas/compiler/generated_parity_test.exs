@@ -87,24 +87,32 @@ defmodule Gas.Compiler.GeneratedParityTest do
   defp read, do: Enum.random(@reads)
   defp filter, do: Enum.random(@filters)
 
+  @writes ~w(assign assign_read assign_run assign_map assign_opaque capture capture_const)a
+  @blocks ~w(if unless case for nested_for tablerow)a
+
   defp statement(depth) do
     # Weighted, not uniform: every bug this has caught was an assign or a capture meeting
     # something else, and spreading the draw evenly over fourteen shapes made those pairs rare
     # enough that the walk stopped finding them.
-    choices =
-      if depth <= 0 do
-        ~w(output assign assign_read assign_run assign_map assign_opaque capture capture_const render render_list counter)a ++
-          ~w(assign assign_read assign_run assign_map assign_opaque capture capture_const)a
-      else
-        ~w(output assign assign_read assign_run assign_map assign_opaque capture capture_const
-           if for nested_for case unless render render_list render_for tablerow counter cycle)a ++
-          ~w(assign assign_run assign_map assign_opaque capture capture_const for if)a
-      end
+    shape = Enum.random(choices(depth))
 
-    case Enum.random(choices) do
-      :output ->
-        "{{ #{read()}#{filter()} }}"
+    cond do
+      shape in @writes -> writes(shape, depth)
+      shape in @blocks -> blocks(shape, depth)
+      true -> calls(shape, depth)
+    end
+  end
 
+  defp choices(depth) when depth <= 0,
+    do: [:output, :render, :render_list, :counter] ++ @writes ++ @writes
+
+  defp choices(_depth),
+    do:
+      [:output, :render, :render_list, :render_for, :cycle, :counter] ++
+        @writes ++ @writes ++ @blocks
+
+  defp writes(shape, depth) do
+    case shape do
       :assign ->
         "{% assign acc = '#{Enum.random(~w(p q r))}'#{filter()} %}"
 
@@ -113,12 +121,6 @@ defmodule Gas.Compiler.GeneratedParityTest do
 
       # The target holds a map, so the read that follows walks through a name whose write may
       # still be waiting; a bare read of it would resolve to the variable instead.
-      :assign_map ->
-        "{% assign obj = #{Enum.random(~w(src obj block.settings))} %}" <>
-          "{% assign acc = #{Enum.random(~w(obj.y obj.z.deep obj[key]))}#{filter()} %}"
-
-      # Assigns back to back, which is what the context write waits across; the second reads a
-      # value that may hold liquid, so it resolves against a context the first has not reached.
       :assign_run ->
         "{% assign acc = '#{Enum.random(~w(p q r))}' %}" <>
           "{% assign acc = #{read()}#{filter()} %}" <>
@@ -126,28 +128,15 @@ defmodule Gas.Compiler.GeneratedParityTest do
 
       # A setting holding liquid read through a filter, so the assign holds the rendered value
       # rather than standing in for the setting. Spelled out: the walk kept missing it.
+      :assign_map ->
+        "{% assign obj = #{Enum.random(~w(src obj block.settings))} %}" <>
+          "{% assign acc = #{Enum.random(~w(obj.y obj.z.deep obj[key]))}#{filter()} %}"
+
+      # Assigns back to back, which is what the deferred context write has to wait across.
       :assign_opaque ->
         "{% assign acc = '#{Enum.random(~w(p q r))}' %}" <>
           "{% assign out = block.settings.tpl#{Enum.random([" | append: ''", " | upcase"])} %}" <>
           "<o>{{ out }}</o>"
-
-      :render ->
-        "{% render '#{Enum.random(~w(plain assigning counting))}', arg: #{read()} %}"
-
-      :render_list ->
-        "{% render 'looping', arg: #{Enum.random(~w(xs ys obj.z))} %}"
-
-      :render_for ->
-        "{% render 'plain' for #{Enum.random(~w(xs ys))} as arg %}"
-
-      :tablerow ->
-        "{% tablerow t in #{Enum.random(~w(xs ys))} %}#{body(depth - 1)}{% endtablerow %}"
-
-      :counter ->
-        "{% #{Enum.random(~w(increment decrement))} #{Enum.random(~w(acc n key))} %}"
-
-      :cycle ->
-        "{% for i in xs %}{% cycle 'a', 'b' %}{% endfor %}"
 
       :capture ->
         "{% capture acc %}#{body(depth - 1)}{% endcapture %}"
@@ -156,13 +145,21 @@ defmodule Gas.Compiler.GeneratedParityTest do
       # the compiler than one it has to run.
       :capture_const ->
         "{% capture acc %}#{Enum.random(~w(lit fixed const))}{% endcapture %}"
+    end
+  end
 
+  defp blocks(shape, depth) do
+    case shape do
       :if ->
         "{% if #{read()} %}#{body(depth - 1)}" <>
           "{% else %}#{body(depth - 1)}{% endif %}"
 
       :unless ->
         "{% unless #{read()} %}#{body(depth - 1)}{% endunless %}"
+
+      :case ->
+        "{% case #{read()} %}{% when 'Y' %}#{body(depth - 1)}" <>
+          "{% else %}#{body(depth - 1)}{% endcase %}"
 
       :for ->
         v = Enum.random(~w(i acc key))
@@ -172,9 +169,19 @@ defmodule Gas.Compiler.GeneratedParityTest do
       :nested_for ->
         "{% for i in xs %}{% for acc in ys %}#{body(depth - 1)}{% endfor %}{% endfor %}"
 
-      :case ->
-        "{% case #{read()} %}{% when 'Y' %}#{body(depth - 1)}" <>
-          "{% else %}#{body(depth - 1)}{% endcase %}"
+      :tablerow ->
+        "{% tablerow t in #{Enum.random(~w(xs ys))} %}#{body(depth - 1)}{% endtablerow %}"
+    end
+  end
+
+  defp calls(shape, _depth) do
+    case shape do
+      :render -> "{% render '#{Enum.random(~w(plain assigning counting))}', arg: #{read()} %}"
+      :render_list -> "{% render 'looping', arg: #{Enum.random(~w(xs ys obj.z))} %}"
+      :render_for -> "{% render 'plain' for #{Enum.random(~w(xs ys))} as arg %}"
+      :counter -> "{% #{Enum.random(~w(increment decrement))} #{Enum.random(~w(acc n key))} %}"
+      :cycle -> "{% for i in xs %}{% cycle 'a', 'b' %}{% endfor %}"
+      :output -> "{{ #{read()}#{filter()} }}"
     end
   end
 

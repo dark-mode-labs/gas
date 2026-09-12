@@ -106,16 +106,18 @@ defmodule Gas.LocalFileSystem do
   end
 
   defp resolve(template_path, file_system) do
-    if String.match?(template_path, ~r"^[^./][a-zA-Z0-9_/-]+$") do
-      Enum.find_value(file_system.roots, {:error, no_such_template(template_path)}, fn root ->
-        case full_path(template_path, root, file_system.pattern) do
-          :missing -> nil
-          found_or_error -> found_or_error
-        end
-      end)
-    else
-      {:error, %Gas.FileSystem.Error{reason: "Illegal template name '#{template_path}'"}}
-    end
+    if String.match?(template_path, ~r"^[^./][a-zA-Z0-9_/-]+$"),
+      do: first_root_holding(template_path, file_system),
+      else: {:error, %Gas.FileSystem.Error{reason: "Illegal template name '#{template_path}'"}}
+  end
+
+  defp first_root_holding(template_path, file_system) do
+    Enum.find_value(file_system.roots, {:error, no_such_template(template_path)}, fn root ->
+      case full_path(template_path, root, file_system.pattern) do
+        :missing -> nil
+        found_or_error -> found_or_error
+      end
+    end)
   end
 
   defp no_such_template(template_path),
