@@ -469,9 +469,8 @@ defmodule Gas.Filters.Filter.Collection do
 
   def push(collection, blank) when Gas.BinaryCondition.match_empty?(blank), do: collection
 
-  def push(collection, input) when is_list(collection) do
-    List.insert_at(collection, -1, input)
-  end
+  # `List.insert_at/3` measures the list before it walks it; appending walks it once.
+  def push(collection, input) when is_list(collection), do: collection ++ [input]
 
   def push(collection, input), do: push([collection], input)
 
@@ -913,7 +912,7 @@ defmodule Gas.Filters.Filter.Asset do
         URI.to_string(uri)
 
       _ ->
-        Logger.error("image_url not implemented yet #{inspect(asset)} #{inspect(opts)}")
+        Logger.error("gas: image_url cannot read #{inspect(asset)} as a URL, so it renders none")
 
         ""
     end

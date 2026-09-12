@@ -494,6 +494,64 @@ defmodule GasTest do
     end
   end
 
+  describe "precompile/2" do
+    defmodule CountingFileSystem do
+      @behaviour Gas.FileSystem
+
+      @impl true
+      def read_template_file(name, counter) do
+        :counters.add(counter, 1, 1)
+        {:ok, "<#{name}>{{ who }}"}
+      end
+    end
+
+    test "keeps nothing, so the same name is read again" do
+      counter = :counters.new(1, [])
+      opts = [file_system: {CountingFileSystem, counter}]
+
+      {:ok, first} = Gas.precompile("read-twice", opts)
+      {:ok, second} = Gas.precompile("read-twice", opts)
+
+      assert :counters.get(counter, 1) == 2
+      assert first.parsed_template == second.parsed_template
+    end
+
+    defmodule InterpolatedFileSystem do
+      @behaviour Gas.FileSystem
+
+      @impl true
+      def read_template_file(name, _opts),
+        do: {:ok, "{% assign g = 'hi {{ who }} #{name}' %}{{ g }}"}
+    end
+
+    test "compiles no module for a literal carrying liquid, which its template inlines" do
+      opts = [file_system: {InterpolatedFileSystem, nil}, codegen: true]
+      name = "interp-#{System.unique_integer([:positive])}"
+
+      {:ok, template} = Gas.precompile(name, opts)
+      assert template.module, "the template did not compile, so this proves nothing"
+
+      interpolated = template.parsed_template |> literals() |> Enum.filter(& &1.interp_ast)
+      assert interpolated != [], "the fixture holds no interpolated literal to check"
+
+      # Rendered by the template's own module; a module of its own would be one nothing calls.
+      for literal <- interpolated do
+        assert literal.interp_ast.module == nil,
+               "an interpolated literal was compiled into #{inspect(literal.interp_ast.module)}"
+      end
+
+      {:ok, out, _errors} = Gas.render(template, %Gas.Context{vars: %{"who" => "Ada"}}, opts)
+      assert IO.iodata_to_binary(out) == "hi Ada #{name}"
+    end
+
+    defp literals(%Gas.Literal{} = literal), do: [literal]
+    defp literals(list) when is_list(list), do: Enum.flat_map(list, &literals/1)
+    defp literals(%_{} = struct), do: struct |> Map.from_struct() |> literals()
+    defp literals(map) when is_map(map), do: map |> Map.values() |> literals()
+    defp literals(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> literals()
+    defp literals(_other), do: []
+  end
+
   describe "precompile/2 with :on_codegen_miss" do
     defmodule EchoFileSystem do
       @behaviour Gas.FileSystem
@@ -503,10 +561,7 @@ defmodule GasTest do
     end
 
     defp cached_opts(extra) do
-      Keyword.merge(
-        [file_system: {EchoFileSystem, nil}, cache_module: Gas.Caching.EtsCache, codegen: true],
-        extra
-      )
+      Keyword.merge([file_system: {EchoFileSystem, nil}, codegen: true], extra)
     end
 
     defp render_to_binary(template, vars, opts) do
@@ -523,10 +578,29 @@ defmodule GasTest do
       assert_received {:enqueued, tree}
 
       # What the host's own process does with the tree it was handed.
-      assert {:ok, _module} = Gas.Compiler.Codegen.compile_cached(tree, %{}, opts)
+      assert {:ok, _module} = Gas.Compiler.Codegen.ensure_compiled(tree, %{}, opts)
 
       assert {:ok, %Gas.Template{module: module}} = Gas.precompile(name, opts)
       assert module, "the host compiled it, but the template cache never picked the module up"
+    end
+
+    test "a host handed the options compiles under the name the template is looked up by" do
+      test = self()
+      name = "named-#{System.unique_integer([:positive])}"
+
+      opts =
+        cached_opts(on_codegen_miss: fn tree, opts -> send(test, {:enqueued, tree, opts}) end)
+
+      assert {:ok, %Gas.Template{module: nil}} = Gas.precompile(name, opts)
+      assert_received {:enqueued, tree, handed}
+
+      assert {:ok, _module} = Gas.Compiler.Codegen.ensure_compiled(tree, %{}, handed)
+
+      assert {:ok, %Gas.Template{module: module}} = Gas.precompile(name, opts)
+      assert module, "the host compiled it under the name, but the lookup missed"
+
+      assert inspect(module) =~ "Gas.Compiled.",
+             "the module is not one of ours: #{inspect(module)}"
     end
 
     test "the deferred render produces exactly what the compiled one does" do
@@ -534,7 +608,7 @@ defmodule GasTest do
       vars = %{"who" => "Ada"}
 
       deferred = cached_opts(on_codegen_miss: fn _tree -> :ok end)
-      compiled = cached_opts(cache_module: Gas.Caching.NoCache)
+      compiled = cached_opts([])
 
       assert {:ok, %Gas.Template{module: nil} = d} = Gas.precompile(name, deferred)
       assert {:ok, %Gas.Template{module: m} = c} = Gas.precompile(name, compiled)

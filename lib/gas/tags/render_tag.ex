@@ -131,7 +131,7 @@ defmodule Gas.Tags.RenderTag do
 
       Gas.Compiler.Runtime.instrument(options, name, fn ->
         name
-        |> get_or_put_cache(options)
+        |> load(options)
         |> do_render(tag, context, options)
       end)
     end
@@ -142,7 +142,7 @@ defmodule Gas.Tags.RenderTag do
       template_name
     end
 
-    defp get_or_put_cache(template, options) do
+    defp load(template, options) do
       Gas.precompile(
         template,
         Keyword.put_new(options, :file_system, {Gas.BlankFileSystem, nil})
@@ -159,10 +159,6 @@ defmodule Gas.Tags.RenderTag do
 
     defp do_render({:ok, []}, _tag, context, _options) do
       {[], context}
-    end
-
-    defp do_render({:ok, {_template_name, %Gas.Template{} = template}}, tag, context, options) do
-      do_render({:ok, template}, tag, context, options)
     end
 
     defp do_render({:ok, %Gas.Template{} = template}, tag, context, options) do

@@ -86,6 +86,10 @@ defmodule Gas.Compiler.CodegenTest do
     def read_template_file("mixed", _opts),
       do: {:ok, "{{ context.item }}/{{ context.keep }}/{{ extra }}"}
 
+    def read_template_file("names-one", _opts), do: {:ok, "<{{ kept }}>"}
+    def read_template_file("names-settings", _opts), do: {:ok, "<{{ settings.a }}>"}
+    def read_template_file("names-greeting", _opts), do: {:ok, "<{{ settings.greeting }}>"}
+
     def read_template_file(path, _opts),
       do: {:error, %Gas.FileSystem.Error{reason: "no such template #{path}"}}
   end
@@ -123,7 +127,7 @@ defmodule Gas.Compiler.CodegenTest do
   # Requires compiled and interpreted to agree for every row, errors included.
   defp compiled_matches(source, rows, opts) do
     interpreted = compiled_template(source, opts)
-    {:ok, module} = Codegen.compile_cached(interpreted.parsed_template)
+    {:ok, module} = Codegen.ensure_compiled(interpreted.parsed_template)
     compiled = %{interpreted | module: module}
 
     rows
@@ -201,10 +205,10 @@ defmodule Gas.Compiler.CodegenTest do
     rendered
   end
 
-  defp specialised_source(source, known) do
-    template = compiled_template(source)
+  defp emitted_source(source, known, opts \\ []) do
+    template = compiled_template(source, opts)
     mod = Module.concat([Gas.CodegenCase, "Src#{System.unique_integer([:positive])}"])
-    {src, _data, _covered, _total} = Codegen.source(template.parsed_template, mod, known)
+    {src, _data, _covered, _total} = Codegen.source(template.parsed_template, mod, known, opts)
     src
   end
 
@@ -521,7 +525,7 @@ defmodule Gas.Compiler.CodegenTest do
     test "it uses the setting's own compiled module when it has one" do
       # module and tree deliberately disagree, so the output names which ran
       {:ok, compiled_from} = Gas.parse("FROM-MODULE")
-      {:ok, module} = Codegen.compile_cached(compiled_from.parsed_template)
+      {:ok, module} = Codegen.ensure_compiled(compiled_from.parsed_template)
       {:ok, other} = Gas.parse("FROM-TREE")
 
       interpolated = %Gas.InterpolatedString{ast: %{other | module: module}, original: "x"}
@@ -536,7 +540,7 @@ defmodule Gas.Compiler.CodegenTest do
 
     test "a template reading an interpolated setting renders it, not the struct" do
       template = compiled_template("[{{ s.content }}]")
-      {:ok, module} = Codegen.compile_cached(template.parsed_template)
+      {:ok, module} = Codegen.ensure_compiled(template.parsed_template)
 
       vars =
         Gas.Compiler.Interpolation.normalize_vars(
@@ -712,7 +716,54 @@ defmodule Gas.Compiler.CodegenTest do
 
   describe "precompile wiring" do
     setup do
-      %{opts: [file_system: {TestFileSystem, nil}]}
+      opts = [file_system: {TestFileSystem, nil}]
+
+      # A render whose callee is not fixed at compile time reaches it by name, so the callee has
+      # to have been compiled under that name. This is the pass that does it.
+      Gas.precompile_all(
+        ~w(greeting outer ctx each counted bare bad mixed),
+        [codegen: true] ++ opts
+      )
+
+      %{opts: opts}
+    end
+
+    # Pins what is decidable: every template gets a module, in dependency order, same source
+    # either way. The ordering barrier itself is a property of the levels, not of a race.
+    test "compiling a level at once builds what compiling one at a time does", %{opts: opts} do
+      names = ~w(greeting outer ctx each counted bare mixed)
+
+      shapes = fn concurrency ->
+        Enum.each(names, &Gas.forget/1)
+        built = Gas.precompile_all(names, [codegen: true, max_concurrency: concurrency] ++ opts)
+
+        for {name, result} <- built do
+          assert {:ok, %Gas.Template{module: module}} = result
+          assert module, "#{name} came out of the pass with no module"
+          {name, emitted_source_of(name, opts)}
+        end
+      end
+
+      serial = shapes.(1)
+      parallel = shapes.(8)
+
+      assert Enum.map(serial, &elem(&1, 0)) == Enum.map(parallel, &elem(&1, 0))
+      assert serial == parallel
+
+      outer = serial |> Enum.find(&(elem(&1, 0) == "outer")) |> elem(1)
+
+      assert outer =~ "render_module(",
+             "the caller stopped calling its callee's module directly"
+    end
+
+    defp emitted_source_of(name, opts) do
+      {:ok, template} = Gas.precompile(name, opts)
+      {:ok, module} = Codegen.module_for(name)
+
+      {src, _data, _covered, _nodes} =
+        Codegen.source(template.parsed_template, module, %{}, [name_modules: true] ++ opts)
+
+      src
     end
 
     test "codegen: true attaches a module and renders identically", %{opts: opts} do
@@ -738,21 +789,12 @@ defmodule Gas.Compiler.CodegenTest do
       assert function_exported?(partial.module, :render, 2)
     end
 
-    test "a template cached before codegen was on is compiled on the next call", %{opts: opts} do
-      cached = [cache_module: Gas.Caching.EtsCache] ++ opts
-
-      {:ok, plain} = Gas.precompile("greeting", cached)
+    test "codegen off leaves the template with no module, and on gives it one", %{opts: opts} do
+      {:ok, plain} = Gas.precompile("greeting", opts)
       assert plain.module == nil
 
-      {:ok, compiled} = Gas.precompile("greeting", [codegen: true] ++ cached)
+      {:ok, compiled} = Gas.precompile("greeting", [codegen: true] ++ opts)
       assert compiled.module != nil
-
-      {:ok, again} = Gas.precompile("greeting", [codegen: true] ++ cached)
-      assert again.module == compiled.module
-
-      # written back, so later hits do not re-derive the module from the tree
-      assert {:ok, %Gas.Template{module: module}} = Gas.Caching.EtsCache.get("greeting")
-      assert module == compiled.module
 
       assert render_to_string(compiled, %{"name" => "Ada"}, opts) == "Hi Ada!"
     end
@@ -799,6 +841,9 @@ defmodule Gas.Compiler.CodegenTest do
 
       assert errors != [], "the interpreter must report the partial's filter error"
       assert out =~ "Filter: slice"
+
+      # `compiled_matches/3` holds both sides to the same bytes and the same count of errors: a
+      # filter error has to reach the caller's error list, not only the page.
       assert compiled_matches(src, [vars], opts) =~ "Filter: slice"
     end
 
@@ -853,11 +898,17 @@ defmodule Gas.Compiler.CodegenTest do
       assert both("{% assign a.b = 'v' %}[{{ a }}]", %{}) == "[]"
     end
 
-    test "a module that cannot be built reports :error instead of raising" do
+    # Diagnostics are held back so that losing a race to a name says nothing; a compile that
+    # failed on its own merits must still say so, which is the half that could go quiet unnoticed.
+    test "a module that cannot be built reports :error, and says why" do
       # A value with no source representation, so the render degrades instead of dying.
       tree = [%Gas.Object{argument: %Gas.Literal{value: self(), loc: nil}, filters: [], loc: nil}]
+      mod = Module.concat([Gas.CodegenCase, "Unbuildable#{System.unique_integer([:positive])}"])
 
-      assert Codegen.compile(tree, Gas.CodegenCase.Unbuildable) == :error
+      {result, log} = with_log(fn -> Codegen.compile(tree, mod) end)
+
+      assert result == :error
+      assert log =~ "would not compile", "a failed compile passed without a word"
     end
 
     test "a tag declaring it renders nothing is compiled away" do
@@ -892,7 +943,7 @@ defmodule Gas.Compiler.CodegenTest do
 
       assert both_known(source, known) == "BAG"
 
-      generated = specialised_source(source, known)
+      generated = emitted_source(source, known)
       refute generated =~ "compare(sub", "a bound subject must not leave a runtime comparison"
       refute generated =~ "STAR", "a branch that cannot be reached must not be generated"
     end
@@ -901,14 +952,14 @@ defmodule Gas.Compiler.CodegenTest do
       source = "{% case icon %}{% when 'star' %}STAR{% else %}NONE{% endcase %}"
 
       assert both(source, %{"icon" => "star"}, %{"icon" => "other"}) == "STAR"
-      assert specialised_source(source, %{}) =~ "compare(sub"
+      assert emitted_source(source, %{}) =~ "compare(sub"
     end
 
     test "a case falls through to else when no bound when matches" do
       source = "{% case icon %}{% when 'star' %}STAR{% else %}NONE{% endcase %}"
 
       assert both_known(source, %{"icon" => "bag"}) == "NONE"
-      refute specialised_source(source, %{"icon" => "bag"}) =~ "STAR"
+      refute emitted_source(source, %{"icon" => "bag"}) =~ "STAR"
     end
 
     test "a when listing several values matches any of them" do
@@ -923,7 +974,7 @@ defmodule Gas.Compiler.CodegenTest do
       source = "{% if flag %}YES{% else %}NO{% endif %}"
 
       assert both_known(source, %{"flag" => false}) == "NO"
-      refute specialised_source(source, %{"flag" => false}) =~ "YES"
+      refute emitted_source(source, %{"flag" => false}) =~ "YES"
     end
 
     test "an empty bound list renders the else body" do
@@ -931,7 +982,7 @@ defmodule Gas.Compiler.CodegenTest do
 
       assert both_known(source, %{"items" => []}) == "EMPTY"
 
-      refute specialised_source(source, %{"items" => []}) =~ ~r/fp\d+ =/,
+      refute emitted_source(source, %{"items" => []}) =~ ~r/fp\d+ =/,
              "an else-only loop must not save a forloop it never restores"
     end
 
@@ -942,7 +993,7 @@ defmodule Gas.Compiler.CodegenTest do
       {% for item in items %}{{ item }}{% endfor %}
       """
 
-      generated = specialised_source(source, %{"icon" => "star", "flag" => true, "items" => []})
+      generated = emitted_source(source, %{"icon" => "star", "flag" => true, "items" => []})
 
       for [_, name] <- Regex.scan(~r/defp (b\d+)\(/, generated) do
         references = length(Regex.scan(~r/\b#{name}\(/, generated))
@@ -960,11 +1011,14 @@ defmodule Gas.Compiler.CodegenTest do
       assert half_settled(source, known, %{"user" => "ada"}) == "both"
       assert half_settled(source, known, %{}) == "one"
 
-      # `truthy/1` is also defined in every generated module, so match the call site.
-      generated = specialised_source(source, known)
+      # `truthy/1` is also defined in every generated module, so match the call site. The read
+      # is whichever form codegen chose for it — a scope walk or an entry-extracted binding.
+      generated = emitted_source(source, known)
       assert generated =~ "(true and", "a settled operand must emit its answer"
       refute generated =~ "(truthy(true)", "a settled operand must not compile to a call"
-      assert generated =~ "truthy(get(", "the unsettled operand must still be read"
+
+      assert generated =~ ~r/truthy\((get1?|resolve|elem)\(/,
+             "the unsettled operand must still be read at runtime"
     end
 
     test "a settled operand that decides an `and` still agrees with the interpreter" do
@@ -972,7 +1026,7 @@ defmodule Gas.Compiler.CodegenTest do
       known = %{"flag" => false}
 
       assert half_settled(source, known, %{"user" => "ada"}) == "one"
-      assert specialised_source(source, known) =~ "(false and"
+      assert emitted_source(source, known) =~ "(false and"
     end
 
     test "an `or` folds its settled half the same way" do
@@ -981,7 +1035,7 @@ defmodule Gas.Compiler.CodegenTest do
 
       assert half_settled(source, known, %{"user" => "ada"}) == "either"
       assert half_settled(source, known, %{}) == "neither"
-      assert specialised_source(source, known) =~ "(false or"
+      assert emitted_source(source, known) =~ "(false or"
     end
 
     test "an elsif whose test is settled folds too" do
@@ -992,7 +1046,7 @@ defmodule Gas.Compiler.CodegenTest do
       assert half_settled(source, known, %{"a" => "yes"}) == "A"
       assert half_settled(source, known, %{}) == "C"
 
-      generated = specialised_source(source, known)
+      generated = emitted_source(source, known)
       assert generated =~ "(true and"
       refute generated =~ "(truthy(true)"
     end
@@ -1072,7 +1126,7 @@ defmodule Gas.Compiler.CodegenTest do
   end
 
   describe "a compiled render that raises" do
-    test "reports the fallback instead of degrading silently" do
+    test "the raise reaches the caller instead of being turned into a slower render" do
       tree = [object("thing")]
       mod = Module.concat([Gas.CodegenCase, "Raise#{System.unique_integer([:positive])}"])
       {:ok, compiled} = Codegen.compile(tree, mod)
@@ -1083,24 +1137,23 @@ defmodule Gas.Compiler.CodegenTest do
           assert_raise Protocol.UndefinedError, fn -> compiled.render(context, []) end
         end)
 
-      assert log =~ "renders interpreted from here"
-      assert log =~ inspect(mod)
+      refute log =~ "interpreted", "a compiled module must not answer a bug by interpreting"
     end
 
-    test "reports once per module, since a raising template raises every time" do
+    test "a context it was not compiled for is refused, not rendered another way" do
       tree = [object("thing")]
-      mod = Module.concat([Gas.CodegenCase, "Once#{System.unique_integer([:positive])}"])
+      mod = Module.concat([Gas.CodegenCase, "Strict#{System.unique_integer([:positive])}"])
       {:ok, compiled} = Codegen.compile(tree, mod)
-      context = %Gas.Context{vars: %{"thing" => %Opaque{x: 1}}}
+      context = %Gas.Context{vars: %{"thing" => "fine"}, strict_variables: true}
 
-      raise_once = fn ->
-        capture_log(fn ->
-          assert_raise Protocol.UndefinedError, fn -> compiled.render(context, []) end
-        end)
+      assert_raise ArgumentError, ~r/compiled for the default matcher/, fn ->
+        compiled.render(context, [])
       end
+    end
 
-      assert raise_once.() =~ "renders interpreted from here"
-      refute raise_once.() =~ "renders interpreted from here"
+    test "a filter given the wrong shape of argument renders the error, as Liquid says" do
+      assert both("{{ s | slice: n }}", %{"s" => "abc", "n" => "x"}, %{"s" => "abc", "n" => 1}) =~
+               "Liquid error (line 1): Filter: slice"
     end
 
     test "a render that does not raise stays quiet" do
@@ -1109,9 +1162,7 @@ defmodule Gas.Compiler.CodegenTest do
       {:ok, compiled} = Codegen.compile(tree, mod)
       context = %Gas.Context{vars: %{"thing" => "fine"}}
 
-      log = capture_log(fn -> compiled.render(context, []) end)
-
-      refute log =~ "renders interpreted from here"
+      assert capture_log(fn -> compiled.render(context, []) end) == ""
     end
   end
 
@@ -1120,7 +1171,7 @@ defmodule Gas.Compiler.CodegenTest do
       template = compiled_template("{{ name }}!")
 
       assert :error =
-               Codegen.compile_cached(template.parsed_template, %{}, module_limit: 0)
+               Codegen.ensure_compiled(template.parsed_template, %{}, module_limit: 0)
     end
 
     test "a setting whose template is past the limit still renders" do
@@ -1144,8 +1195,161 @@ defmodule Gas.Compiler.CodegenTest do
       template = compiled_template("{{ name }}?")
       tree = template.parsed_template
 
-      assert {:ok, first} = Codegen.compile_cached(tree, %{}, module_limit: 1_000_000)
-      assert {:ok, ^first} = Codegen.compile_cached(tree, %{}, module_limit: 1_000_000)
+      assert {:ok, first} = Codegen.ensure_compiled(tree, %{}, module_limit: 1_000_000)
+      assert {:ok, ^first} = Codegen.ensure_compiled(tree, %{}, module_limit: 1_000_000)
+    end
+  end
+
+  # `Gas.render/3` and the module's own first clause decide this separately; disagree and a render
+  # either raises or silently skips the module.
+  describe "the two halves of `is this context compiled for?`" do
+    defmodule EveryValueMatcher do
+      def match(_data, _keys), do: {:ok, 42}
+    end
+
+    defp agreeing(context, opts) do
+      template = compiled_template("{{ a }}/{{ missing }}")
+      {:ok, module} = Codegen.ensure_compiled(template.parsed_template)
+
+      interpreted = Gas.render(template, context, opts)
+      dispatched = Gas.render(%{template | module: module}, context, opts)
+
+      assert dispatched == interpreted
+    end
+
+    @plain_context %Gas.Context{vars: %{"a" => "x"}}
+
+    test "the default context is dispatched, and agrees" do
+      agreeing(@plain_context, [])
+    end
+
+    test "a context the module was not built for is never handed to it" do
+      agreeing(%{@plain_context | strict_variables: true}, [])
+      agreeing(%{@plain_context | matcher_module: EveryValueMatcher}, [])
+      agreeing(%{@plain_context | scopes: [:vars]}, [])
+    end
+
+    test "options flip it too, and are read before the decision" do
+      agreeing(@plain_context, strict_variables: true)
+      agreeing(@plain_context, matcher_module: EveryValueMatcher)
+      agreeing(@plain_context, scopes: [:vars])
+    end
+  end
+
+  # `blank` parses to `""`; what makes it more than that lives in `BinaryCondition`'s empty
+  # guards, which the compiled fast path for two binaries must not read more narrowly.
+  describe "`blank` means the same compiled and interpreted" do
+    for {label, value, blank?} <- [
+          {"nil", nil, true},
+          {"an empty string", "", true},
+          {"an empty list", [], true},
+          {"an empty map", %{}, true},
+          # gas reads `blank` as `""`, so whitespace is not blank here as it is in Shopify liquid
+          {"whitespace", "   ", false},
+          {"a non-empty string", "x", false},
+          {"a non-empty list", ["a"], false},
+          {"zero", 0, false}
+        ] do
+      test "#{label} against blank" do
+        vars = %{"v" => unquote(Macro.escape(value))}
+        {yes, no} = if unquote(blank?), do: {"Y", "N"}, else: {"N", "Y"}
+
+        assert both("{% if v == blank %}Y{% else %}N{% endif %}", vars) == yes
+        assert both("{% if v != blank %}Y{% else %}N{% endif %}", vars) == no
+      end
+    end
+  end
+
+  # `scan_scopes` treats a found nil as "keep looking", and a compiled read answers from the
+  # scope directly — which is where that rule is easiest to drop.
+  describe "a nil in one scope does not shadow another" do
+    defp scoped(context) do
+      template = compiled_template("[{{ n }}]")
+      {:ok, module} = Codegen.ensure_compiled(template.parsed_template)
+
+      {interpreted, _} = Gas.render(template.parsed_template, context, [])
+      {compiled, _} = module.render(context, [])
+
+      assert IO.iodata_to_binary(compiled) == IO.iodata_to_binary(interpreted)
+      IO.iodata_to_binary(compiled)
+    end
+
+    test "a nil var falls through to the counter that has a value" do
+      assert scoped(%Gas.Context{vars: %{"n" => nil}, counter_vars: %{"n" => 7}}) == "[7]"
+    end
+
+    test "a nil iteration var falls through to the var that has a value" do
+      assert scoped(%Gas.Context{iteration_vars: %{"n" => nil}, vars: %{"n" => "v"}}) == "[v]"
+    end
+
+    test "a real value in the nearer scope still wins" do
+      assert scoped(%Gas.Context{iteration_vars: %{"n" => "it"}, vars: %{"n" => "v"}}) == "[it]"
+      assert scoped(%Gas.Context{vars: %{"n" => "v"}, counter_vars: %{"n" => 7}}) == "[v]"
+    end
+  end
+
+  describe "render arguments the callee never names" do
+    test "an argument the callee never reads is not built or passed" do
+      opts = [file_system: {TestFileSystem, nil}]
+      src = emitted_source("{% render 'names-one', kept: a, dropped: b %}", %{}, opts)
+
+      assert src =~ "kept", "the argument the callee names must still be passed"
+      refute src =~ "dropped", "an argument the callee never names was built anyway"
+    end
+
+    test "a callee reading an opaque root is passed everything" do
+      opts = [file_system: {TestFileSystem, nil}, opaque_roots: ["settings"]]
+      src = emitted_source("{% render 'names-settings', settings: s, dropped: b %}", %{}, opts)
+
+      assert src =~ "dropped",
+             "settings can carry more liquid, so the callee's tree does not list what it reads"
+    end
+
+    test "without the host naming it opaque, the same callee is trimmed" do
+      opts = [file_system: {TestFileSystem, nil}]
+      src = emitted_source("{% render 'names-settings', settings: s, dropped: b %}", %{}, opts)
+
+      refute src =~ "dropped"
+    end
+
+    # What `opaque_roots` is for: the value carries liquid naming what no tree of the callee shows.
+    test "an opaque root's liquid reaches a variable the callee's tree never names" do
+      src = "{% render 'names-greeting', settings: s, who: name %}"
+      base = [file_system: {TestFileSystem, nil}]
+
+      vars =
+        Gas.Compiler.Interpolation.normalize_vars(
+          %{"s" => %{"greeting" => "hi {{ who }}"}, "name" => "Ada"},
+          base
+        )
+
+      guarded = base ++ [opaque_roots: ["settings"]]
+      template = compiled_template(src, guarded)
+      {:ok, module} = Codegen.ensure_compiled(template.parsed_template, %{}, guarded)
+      {_errors, out} = outcome(%{template | module: module}, vars, guarded)
+
+      assert out == "<hi Ada>"
+
+      unguarded = compiled_template(src, base)
+      {:ok, trimmed} = Codegen.ensure_compiled(unguarded.parsed_template, %{}, base)
+      {_errors, without} = outcome(%{unguarded | module: trimmed}, vars, base)
+
+      assert without == "<hi >",
+             "unguarded trimming is supposed to lose `who`; if it does not, the guard is pointless"
+    end
+
+    test "a trimmed render still produces what the interpreter does" do
+      opts = [file_system: {TestFileSystem, nil}]
+      template = compiled_template("{% render 'names-one', kept: a, dropped: b %}", opts)
+      {:ok, module} = Codegen.ensure_compiled(template.parsed_template, %{}, opts)
+
+      for vars <- [%{"a" => "A", "b" => "B"}, %{"a" => "C", "b" => "D"}] do
+        {_errors, interpreted} = outcome(template, vars, opts)
+        {_errors, compiled} = outcome(%{template | module: module}, vars, opts)
+
+        assert compiled == interpreted
+        assert interpreted == "<#{vars["a"]}>"
+      end
     end
   end
 
@@ -1209,6 +1413,11 @@ defmodule Gas.Compiler.CodegenTest do
     test "times a render whose target is only known at runtime" do
       opts = instrumented(codegen: true)
       vars = %{"which" => "greeting", "who" => "Ada"}
+
+      # The target is a variable, so the callee is reached by name and has to have been compiled
+      # under it. Nothing else can turn a name into code without reading a file at render time.
+      Gas.precompile_all(["greeting"], opts)
+
       {compiled, src} = compile_with("{% render which, name: who %}", %{"other" => 1}, opts)
 
       assert src =~ "render_partial(", "this test is not driving the runtime-target path"
@@ -1223,6 +1432,7 @@ defmodule Gas.Compiler.CodegenTest do
         compile_with("[{% render 'greeting', name: who %}]", %{"other" => 1}, opts)
 
       assert src =~ "render_module(", "this test is not driving the inlined path"
+
       assert rendered(compiled, %{"who" => "Ada"}, opts) == "[Hi Ada!]"
       assert timed_names() == ["greeting"]
     end
@@ -1260,6 +1470,406 @@ defmodule Gas.Compiler.CodegenTest do
 
       assert rendered(without, vars, plain) ==
                rendered(with_it, vars, instrumented(codegen: true))
+    end
+  end
+
+  describe "a template's path names its module" do
+    defp named(source, name) do
+      tree = compiled_template(source).parsed_template
+      {:ok, module} = Codegen.ensure_compiled(tree, %{}, name: name)
+      module
+    end
+
+    test "the module is the path, so it can be read and found again" do
+      assert named("hello", "snippets/typography") == :"Elixir.Gas.Compiled.snippets_typography"
+
+      assert named("hello", "blocks/menu-card-full") ==
+               :"Elixir.Gas.Compiled.blocks_menu_card_full"
+    end
+
+    test "a name nothing compiled coins no atom for being asked about" do
+      never = "blocks/never-compiled-#{System.unique_integer([:positive])}"
+
+      assert Codegen.module_for(never) == :error
+    end
+
+    test "two files holding the same liquid keep a module each" do
+      one = named("same", "blocks/one")
+      two = named("same", "blocks/two")
+
+      refute one == two
+
+      assert {:ok, ^one} =
+               Codegen.ensure_compiled(compiled_template("same").parsed_template, %{},
+                 name: "blocks/one"
+               )
+    end
+
+    test "the module answers for the name until the name is forgotten" do
+      first = named("first", "blocks/edited")
+      assert rendered_by(first) == "first"
+
+      assert named("second", "blocks/edited") == first,
+             "a second compile under the name must not mint a module beside the first"
+
+      assert rendered_by(first) == "first", "the module stands until it is forgotten"
+
+      :ok = Codegen.forget("blocks/edited")
+      again = named("second", "blocks/edited")
+
+      assert again == first, "forgetting frees the name, it does not change it"
+      assert rendered_by(again) == "second"
+    end
+
+    defp rendered_by(module) do
+      {out, _ctx} = module.render(%Gas.Context{vars: %{}}, [])
+      IO.iodata_to_binary(out)
+    end
+
+    test "a tree compiled against bindings does not take the file's name" do
+      tree = compiled_template("{{ who }}").parsed_template
+      {:ok, module} = Codegen.ensure_compiled(tree, %{"who" => "Ada"}, name: "blocks/bound")
+
+      refute module == Gas.Compiled.Blocks.Bound
+    end
+
+    test "a tree given no name gets a module named after its content" do
+      source = "unnamed #{System.unique_integer([:positive])}"
+
+      {:ok, module} = Codegen.ensure_compiled(compiled_template(source).parsed_template, %{})
+      assert inspect(module) =~ "Gas.Compiled."
+
+      # Parsed again from the same source, so nothing but the content can be what matched.
+      {:ok, again} = Codegen.ensure_compiled(compiled_template(source).parsed_template, %{})
+      assert again == module
+
+      {:ok, other} =
+        Codegen.ensure_compiled(compiled_template(source <> "!").parsed_template, %{})
+
+      refute other == module, "different liquid was answered with the same module"
+    end
+  end
+
+  describe "leaving a loop early" do
+    test "break stops the loop and keeps what it had rendered" do
+      source = "{% for i in (1..5) %}{% if i == 3 %}{% break %}{% endif %}{{ i }}{% endfor %}"
+
+      assert both(source, %{}) == "12"
+      assert_compiled(source)
+    end
+
+    test "continue skips one turn of the loop" do
+      source = "{% for i in (1..5) %}{% if i == 3 %}{% continue %}{% endif %}{{ i }}{% endfor %}"
+
+      assert both(source, %{}) == "1245"
+      assert_compiled(source)
+    end
+
+    test "break leaves only the loop it is in" do
+      source = """
+      {% for a in (1..2) %}{% for b in (1..3) %}{% if b == 2 %}{% break %}{% endif %}{{ a }}{{ b }}{% endfor %}|{% endfor %}
+      """
+
+      assert both(source, %{}) == "11|21|\n"
+      assert_compiled(source)
+    end
+
+    test "the name a loop assigned before breaking survives the loop" do
+      source =
+        "{% assign found = '' %}{% for i in (1..5) %}{% if i == 2 %}{% assign found = 'hit' %}{% break %}{% endif %}{% endfor %}[{{ found }}]"
+
+      assert both(source, %{}) == "[hit]"
+      assert_compiled(source)
+    end
+  end
+
+  defmodule VanishingFileSystem do
+    @behaviour Gas.FileSystem
+
+    @impl true
+    def read_template_file(name, table) do
+      if :ets.update_counter(table, name, 1, {name, 0}) > 1 do
+        raise "#{name} vanished mid-pass"
+      end
+
+      {:ok, "hello"}
+    end
+  end
+
+  describe "a template that brings a compile down" do
+    test "exits the pass with the reason that brought it down" do
+      table = :ets.new(:reads, [:public, :set])
+      parent = self()
+
+      # Trapping, as an application start callback is: untrapped, the linked task's crash kills
+      # the caller outright and the pass never gets to say which template did it.
+      spawn(fn ->
+        Process.flag(:trap_exit, true)
+
+        outcome =
+          try do
+            Gas.precompile_all(~w(a b),
+              codegen: true,
+              file_system: {VanishingFileSystem, table}
+            )
+
+            :finished_anyway
+          catch
+            :exit, reason -> {:exited, reason}
+          end
+
+        send(parent, outcome)
+      end)
+
+      assert_receive {:exited, reason}, 5_000
+      assert inspect(reason) =~ "vanished mid-pass"
+    end
+  end
+
+  describe "the compiler's own complaint about a content-named module" do
+    defp diagnostics(source) do
+      {_result, diagnostics} = Code.with_diagnostics(fn -> Code.compile_string(source) end)
+      diagnostics
+    end
+
+    test "a redefinition is suppressed, and only a redefinition" do
+      module = Module.concat([Gas.Compiled, :"c_#{System.unique_integer([:positive])}"])
+      source = "defmodule #{inspect(module)} do\n  def render(_c, _o), do: {[], nil}\nend\n"
+
+      assert diagnostics(source) == []
+      assert [redefinition] = diagnostics(source)
+      assert Codegen.redefined?(redefinition, module)
+
+      kept =
+        """
+        defmodule #{inspect(module)} do
+          def render(context, _o), do: {[], nil}
+        end
+        """
+        |> diagnostics()
+        |> Enum.reject(&Codegen.redefined?(&1, module))
+
+      assert [%{message: message}] = kept
+      assert message =~ "context"
+    end
+
+    test "a redefinition of one module is not suppressed for another" do
+      for_module = Module.concat([Gas.Compiled, :"c_#{System.unique_integer([:positive])}"])
+      source = "defmodule #{inspect(for_module)} do\nend\n"
+
+      diagnostics(source)
+      assert [redefinition] = diagnostics(source)
+
+      refute Codegen.redefined?(redefinition, Module.concat([Gas.Compiled, :c_other]))
+    end
+  end
+
+  # An assign leaves its value in a variable and defers the context write; a path reads back
+  # through the context, so the write has to land before one that walks through the name.
+  # A setting holding liquid renders against the context reading it, so a deferred assign has to
+  # have landed before one of those resolves.
+  describe "a setting whose liquid names an assign above it" do
+    setup do
+      opts = [opaque_roots: ~w(block settings s), module_limit: 1_000_000]
+
+      vars =
+        Gas.Compiler.Interpolation.normalize_vars(
+          %{"block" => %{"settings" => %{"tpl" => "{{ greeting }}!"}}, "who" => "hi"},
+          opts
+        )
+
+      %{opts: opts, vars: vars}
+    end
+
+    defp resolves(source, %{opts: opts, vars: vars}) do
+      {:ok, template} = Gas.parse(source, opts)
+      {:ok, module} = Codegen.ensure_compiled(template.parsed_template, %{}, opts)
+      context = %Gas.Context{vars: vars}
+
+      {interpreted, _} = Gas.render(template.parsed_template, context, opts)
+      {compiled, _} = module.render(context, opts)
+
+      assert IO.iodata_to_binary(compiled) == IO.iodata_to_binary(interpreted)
+      IO.iodata_to_binary(compiled)
+    end
+
+    test "resolves against the assign, not the context it was deferred from", ctx do
+      assert resolves("{% assign greeting = who %}[{{ block.settings.tpl }}]", ctx) == "[hi!]"
+    end
+
+    test "resolves when the setting is assigned before it is output", ctx do
+      source = "{% assign greeting = who %}{% assign out = block.settings.tpl %}[{{ out }}]"
+      assert resolves(source, ctx) == "[hi!]"
+    end
+
+    test "resolves against the last write when the name is assigned twice", ctx do
+      source =
+        "{% assign greeting = who %}{% assign greeting = 'bye' %}[{{ block.settings.tpl }}]"
+
+      assert resolves(source, ctx) == "[bye!]"
+    end
+
+    # A filter makes the assign hold the rendered value instead of standing in for the setting,
+    # so this is the one that reads a context the deferred write has not reached.
+    # A captured body the bindings settle folds to a string, and the fold answers reads here; the
+    # setting's liquid reads the context instead, so the write has to happen anyway.
+    test "resolves against a capture the compiler folded", ctx do
+      source = "{% capture greeting %}held{% endcapture %}[{{ block.settings.tpl }}]"
+      assert resolves(source, ctx) == "[held!]"
+    end
+
+    test "resolves when a filter makes the assign hold the value", ctx do
+      source =
+        "{% assign greeting = who %}{% assign out = block.settings.tpl | append: '' %}[{{ out }}]"
+
+      assert resolves(source, ctx) == "[hi!]"
+    end
+  end
+
+  # A loop variable shadows whatever the name held coming in, and the bindings the compiler
+  # settled before the loop are exactly what would keep the old value folded in the body.
+  # `iteration_vars` is read before `vars`, so the loop variable answers a read of its own name
+  # even after the body assigns it; the write is still there once the loop ends.
+  # A loop binds its variable and its `forloop`, and `iteration_vars` answers both before `vars`,
+  # so nothing the body writes under those names can be read back inside it.
+  describe "a capture or builtin under the loop variable's name" do
+    test "a capture does not answer reads the loop variable owns" do
+      assert both("{% for acc in ys %}{% capture acc %}X{% endcapture %}{{ acc }}{% endfor %}", %{
+               "ys" => ~w(1 2)
+             }) == "12"
+    end
+
+    test "the captured value is what the name holds after the loop" do
+      assert both(
+               "{% for acc in ys %}{% capture acc %}X{% endcapture %}{% endfor %}[{{ acc }}]",
+               %{
+                 "ys" => ~w(1 2)
+               }
+             ) == "[X]"
+    end
+
+    test "assigning forloop does not take over the loop's own" do
+      assert both("{% for i in ys %}{% assign forloop = 'X' %}{{ forloop.index }}{% endfor %}", %{
+               "ys" => ~w(1 2)
+             }) == "12"
+    end
+  end
+
+  # A superseded assign leaves its value written and never read, and warns about it.
+  describe "a value the body never reads back" do
+    defp diagnostics_compiling(source) do
+      template = compiled_template(source)
+      module = Module.concat([Gas.Compiled, :"c_#{System.unique_integer([:positive])}"])
+
+      {_result, diagnostics} =
+        Code.with_diagnostics(fn ->
+          {generated, _data, _covered, _total} =
+            Codegen.source(template.parsed_template, module, %{}, [])
+
+          Code.compile_string(generated)
+        end)
+
+      diagnostics
+    end
+
+    test "compiles without a warning, and still renders the last write" do
+      source = "{% assign a = 'x' %}{% assign a = 'y' %}[{{ a }}]"
+
+      assert diagnostics_compiling(source) == []
+      assert both(source, %{}) == "[y]"
+    end
+
+    test "compiles without a warning when the superseded value was read in between" do
+      source = "{% assign a = 'x' %}[{{ a }}]{% assign a = 'y' %}[{{ a }}]"
+
+      assert diagnostics_compiling(source) == []
+      assert both(source, %{}) == "[x][y]"
+    end
+
+    test "compiles without a warning when the name is written three times" do
+      source = "{% assign a = x %}{% assign a = y %}{% assign a = z %}[{{ a }}]"
+
+      assert diagnostics_compiling(source) == []
+      assert both(source, %{"x" => "1", "y" => "2", "z" => "3"}) == "[3]"
+    end
+  end
+
+  describe "an assign to the loop variable's own name" do
+    test "the loop variable still answers reads inside the body" do
+      assert both("{% for acc in ys %}{% assign acc = 'X' %}{{ acc }}{% endfor %}", %{
+               "ys" => ~w(1 2)
+             }) == "12"
+    end
+
+    test "the write is what the name holds after the loop" do
+      assert both("{% for acc in ys %}{% assign acc = 'X' %}{% endfor %}[{{ acc }}]", %{
+               "ys" => ~w(1 2)
+             }) == "[X]"
+    end
+
+    test "a loop over a range settles the same way" do
+      assert both("{% for acc in (1..2) %}{% assign acc = 'X' %}{{ acc }}{% endfor %}", %{}) ==
+               "12"
+    end
+  end
+
+  describe "a loop variable that shadows a name already assigned" do
+    test "the body reads the item, not the value assigned before the loop" do
+      assert both("{% assign i = 'outer' %}{% for i in xs %}{{ i }}{% endfor %}[{{ i }}]", %{
+               "xs" => ~w(x y)
+             }) == "xy[outer]"
+    end
+
+    test "the name holds its earlier value again after the loop" do
+      assert both("{% assign i = 'outer' %}{% for i in xs %}{% endfor %}[{{ i }}]", %{
+               "xs" => ~w(x y)
+             }) == "[outer]"
+    end
+
+    test "a forloop assigned before the loop does not survive into it" do
+      assert both(
+               "{% assign forloop = 'no' %}{% for i in xs %}{{ forloop.index }}{% endfor %}",
+               %{
+                 "xs" => ~w(a b)
+               }
+             ) == "12"
+    end
+  end
+
+  describe "a path through a name just assigned" do
+    test "reads the value that assign gave it" do
+      assert both("{% assign a = src %}{% assign b = a.y %}[{{ b }}]", %{"src" => %{"y" => "hit"}}) ==
+               "[hit]"
+    end
+
+    test "reads it two levels down" do
+      assert both("{% assign a = src %}{% assign b = a.y.z %}[{{ b }}]", %{
+               "src" => %{"y" => %{"z" => "deep"}}
+             }) == "[deep]"
+    end
+
+    test "reads it through a key the bindings do not settle" do
+      assert both("{% assign a = src %}{% assign b = a[k] %}[{{ b }}]", %{
+               "src" => %{"y" => "hit"},
+               "k" => "y"
+             }) == "[hit]"
+    end
+  end
+
+  describe "assigning the same name twice" do
+    test "hands back a context carrying the last write" do
+      source = "{% assign x = 'a' %}{% assign x = 'b' %}"
+      {:ok, module} = Codegen.ensure_compiled(compiled_template(source).parsed_template)
+
+      {_out, context} = module.render(%Gas.Context{vars: %{}}, [])
+
+      assert context.vars["x"] == "b"
+    end
+
+    test "a capture reading the name it overwrites sees the earlier write" do
+      assert both("{% assign x = y %}{% capture x %}{{ x }}!{% endcapture %}{{ x }}", %{
+               "y" => "a"
+             }) == "a!"
     end
   end
 end
