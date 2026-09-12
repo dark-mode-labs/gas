@@ -900,9 +900,6 @@ defmodule Gas.Filters.Filter.Asset do
 
   def image_url([head | _rest], opts), do: image_url(head, opts)
 
-  # A data URI carries the image itself, and `URI.new/1` rejects the spaces an inline SVG uses.
-  def image_url("data:" <> _rest = data, _opts), do: data
-
   def image_url(asset, opts) when is_binary(asset) do
     asset_location =
       case resolve_media_url(asset, media_opts(opts)) do
