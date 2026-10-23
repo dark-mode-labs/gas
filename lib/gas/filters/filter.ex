@@ -516,9 +516,9 @@ defmodule Gas.Filters.Filter.Date do
   def date(word, fmt) when word in ["now", "today"], do: date(NaiveDateTime.utc_now(), fmt)
 
   def date(str, fmt) when is_binary(str) do
-    case DateTime.from_iso8601(str) do
-      {:ok, dt, _} -> date(dt, fmt)
-      _ -> str
+    case as_datetime(str) do
+      {:ok, dt} -> date(dt, fmt)
+      :error -> str
     end
   end
 
