@@ -245,7 +245,7 @@ defmodule Gas.Compiler.Runtime do
   def render_module(module, vars, context, opts, template \\ nil) do
     instrument(opts, template, fn ->
       {out, errors} =
-        reusing(template, vars, opts, fn ->
+        reusing(template, vars, opts, fn vars ->
           {out, inner} = module.render(inner_context(vars), opts)
           {out, inner.errors}
         end)
@@ -261,17 +261,18 @@ defmodule Gas.Compiler.Runtime do
   `{% render %}` is isolated — the callee sees a fresh context built only from
   `vars` — so its output is fixed by the name and those arguments. Which of them
   the output actually turns on is the host's to know, so the hook is handed the
-  name, the arguments and a zero-arity function returning `{output, errors}`.
+  name, the arguments and a function rendering the callee from arguments, which it
+  may call with others.
   """
-  @spec reusing(term, map, keyword, (-> {iodata, list})) :: {iodata, list}
+  @spec reusing(term, map, keyword, (map -> {iodata, list})) :: {iodata, list}
   def reusing(name, vars, opts, fun) when is_binary(name) do
     case Keyword.get(opts, :memo) do
       memo when is_function(memo, 3) -> memo.(name, vars, fun)
-      _absent -> fun.()
+      _absent -> fun.(vars)
     end
   end
 
-  def reusing(_name, _vars, _opts, fun), do: fun.()
+  def reusing(_name, vars, _opts, fun), do: fun.(vars)
 
   defp carry_errors(context, []), do: context
   defp carry_errors(context, errors), do: Context.put_errors(context, errors)
@@ -410,7 +411,7 @@ defmodule Gas.Compiler.Runtime do
   @doc "`{% render %}` with its arguments already evaluated by the caller."
   def render_partial(name, vars, context, opts, loc) do
     instrument(opts, name, fn ->
-      {out, errors} = reusing(name, vars, opts, fn -> partial(name, vars, opts, loc) end)
+      {out, errors} = reusing(name, vars, opts, &partial(name, &1, opts, loc))
       {out, carry_errors(context, errors)}
     end)
   end

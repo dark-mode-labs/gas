@@ -1473,6 +1473,35 @@ defmodule Gas.Compiler.CodegenTest do
     end
   end
 
+  describe ":memo" do
+    defp renaming(opts) do
+      Keyword.merge(opts,
+        file_system: {TestFileSystem, nil},
+        memo: fn "greeting", vars, render -> render.(Map.put(vars, "name", "Grace")) end
+      )
+    end
+
+    test "renders a callee reached by name with the arguments the host hands it" do
+      opts = renaming(codegen: true)
+      Gas.precompile_all(["greeting"], opts)
+
+      {compiled, src} = compile_with("{% render which, name: who %}", %{"other" => 1}, opts)
+
+      assert src =~ "render_partial(", "this test is not driving the runtime-target path"
+      assert rendered(compiled, %{"which" => "greeting", "who" => "Ada"}, opts) == "Hi Grace!"
+    end
+
+    test "renders an inlined callee with the arguments the host hands it" do
+      opts = renaming(codegen: true)
+
+      {compiled, src} =
+        compile_with("[{% render 'greeting', name: who %}]", %{"other" => 1}, opts)
+
+      assert src =~ "render_module(", "this test is not driving the inlined path"
+      assert rendered(compiled, %{"who" => "Ada"}, opts) == "[Hi Grace!]"
+    end
+  end
+
   describe "a template's path names its module" do
     defp named(source, name) do
       tree = compiled_template(source).parsed_template
